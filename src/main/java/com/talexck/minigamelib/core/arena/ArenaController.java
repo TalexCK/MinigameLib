@@ -372,7 +372,7 @@ public final class ArenaController implements Listener {
         chest.lootTable().stream().map(this::toChestLootEntry).toList(),
         toChestPlacementMode(chest.placementMode()), chest.timedRegeneration(),
         chest.timedDestruction(), chest.regenerationPeriodTicks(), chest.destructionDelayTicks(),
-        chest.minItems(), chest.maxItems());
+        chest.minItems(), chest.maxItems(), chest.displayName());
   }
 
   private ChestLootEntry toChestLootEntry(ArenaLootEntry entry) {

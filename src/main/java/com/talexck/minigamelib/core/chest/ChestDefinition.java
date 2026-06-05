@@ -5,18 +5,27 @@ import java.util.Objects;
 
 public record ChestDefinition(ChestPosition position, List<ChestLootEntry> lootTable,
     ChestPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
-    long regenerationPeriodTicks, long destructionDelayTicks, int minItems, int maxItems) {
+    long regenerationPeriodTicks, long destructionDelayTicks, int minItems, int maxItems,
+    String displayName) {
 
   public ChestDefinition(ChestPosition position, List<ChestLootEntry> lootTable,
       ChestPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
       long regenerationPeriodTicks, long destructionDelayTicks) {
     this(position, lootTable, placementMode, timedRegeneration, timedDestruction,
-        regenerationPeriodTicks, destructionDelayTicks, 0, 27);
+        regenerationPeriodTicks, destructionDelayTicks, 0, 27, "");
+  }
+
+  public ChestDefinition(ChestPosition position, List<ChestLootEntry> lootTable,
+      ChestPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
+      long regenerationPeriodTicks, long destructionDelayTicks, int minItems, int maxItems) {
+    this(position, lootTable, placementMode, timedRegeneration, timedDestruction,
+        regenerationPeriodTicks, destructionDelayTicks, minItems, maxItems, "");
   }
 
   public ChestDefinition {
     Objects.requireNonNull(position, "position");
     lootTable = List.copyOf(Objects.requireNonNull(lootTable, "lootTable"));
+    displayName = displayName == null ? "" : displayName;
     if (placementMode == null) {
       placementMode = ChestPlacementMode.AUTO;
     }

@@ -1,5 +1,6 @@
 package com.talexck.minigamelib.core.chest;
 
+import net.kyori.adventure.text.Component;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -115,7 +116,7 @@ public final class ChestController {
   private void generateDefinition(ArenaChestSession session, ChestDefinition definition, int round,
       BiConsumer<ChestDefinition, Location> generatedCallback) {
     Location location = definition.position().toLocation(session.world());
-    fillChest(location, selectLoot(definition, round), definition.placementMode());
+    fillChest(location, selectLoot(definition, round), definition);
     generatedCallback.accept(definition, location);
   }
 
@@ -158,17 +159,20 @@ public final class ChestController {
     return entries.get(entries.size() - 1);
   }
 
-  private void fillChest(Location location, List<ItemStack> loot,
-      ChestPlacementMode placementMode) {
+  private void fillChest(Location location, List<ItemStack> loot, ChestDefinition definition) {
     Block block = location.getBlock();
     block.setType(Material.CHEST);
     if (!(block.getState() instanceof Chest chest)) {
       return;
     }
+    if (!definition.displayName().isBlank()) {
+      chest.customName(Component.text(definition.displayName()));
+      chest.update(true);
+    }
 
     Inventory inventory = chest.getBlockInventory();
     inventory.clear();
-    List<Integer> slots = resolveSlots(inventory.getSize(), loot.size(), placementMode);
+    List<Integer> slots = resolveSlots(inventory.getSize(), loot.size(), definition.placementMode());
     for (int index = 0; index < loot.size() && index < slots.size(); index++) {
       inventory.setItem(slots.get(index), loot.get(index));
     }

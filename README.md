@@ -1,6 +1,6 @@
 # MinigameLib API 文档
 
-MinigameLib 是 Paper 1.21.11 小游戏基础库。对外只暴露 Arena API，世界复制、运行世界加载、loot chest、边界、UI、声音、材质包等由 MinigameLib 内部执行。
+MinigameLib 是 Paper 1.21.11 小游戏基础库。对外暴露 Arena API 和 Setup API，世界复制、运行世界加载、loot chest、边界、UI、声音、材质包等由 MinigameLib 内部执行。
 
 **构建**
 
@@ -21,13 +21,43 @@ target/minigamelib-1.0.0-SNAPSHOT.jar
 ```java
 MinigameLibrary lib = Bukkit.getServicesManager().load(MinigameLibrary.class);
 ArenaService arenas = lib.arenas();
+SetupService setup = lib.setup();
 ```
 
-`MinigameLibrary` 当前只暴露：
+`MinigameLibrary` 当前暴露：
 
 ```java
 ArenaService arenas();
+SetupService setup();
 ```
+
+**SetupService**
+
+用于外部插件制作地图配置工具。
+
+```java
+void startBlockMarker(Player player, SetupBlockMarkListener listener);
+void stopBlockMarker(Player player);
+boolean isBlockMarkerActive(Player player);
+```
+
+示例：
+
+```java
+lib.setup().startBlockMarker(player, mark -> {
+  Block block = mark.block();
+  ArenaPoint point = mark.point();
+  player.sendMessage("marked " + block.getType() + " at " + point);
+});
+```
+
+行为：
+
+- 调用 `startBlockMarker` 后，玩家会获得一把内部标记过的木斧。
+- 玩家手持该木斧左键方块时，会取消原交互并触发 `SetupBlockMarkListener`。
+- `SetupBlockMark` 提供 `player`、`block`、`location`、`point`。
+- `point` 使用被标记方块的位置，可直接转成 Arena 配置里的点位数据。
+- `stopBlockMarker` 会停止该玩家的标记监听。
 
 **ArenaService**
 

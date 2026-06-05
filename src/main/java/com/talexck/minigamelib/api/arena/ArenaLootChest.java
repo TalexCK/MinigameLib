@@ -12,18 +12,27 @@ public record ArenaLootChest(
     long regenerationPeriodTicks,
     long destructionDelayTicks,
     int minItems,
-    int maxItems) {
+    int maxItems,
+    String displayName) {
 
   public ArenaLootChest(ArenaPoint position, List<ArenaLootEntry> lootTable,
       ArenaLootPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
       long regenerationPeriodTicks, long destructionDelayTicks) {
     this(position, lootTable, placementMode, timedRegeneration, timedDestruction,
-        regenerationPeriodTicks, destructionDelayTicks, 0, 27);
+        regenerationPeriodTicks, destructionDelayTicks, 0, 27, "");
+  }
+
+  public ArenaLootChest(ArenaPoint position, List<ArenaLootEntry> lootTable,
+      ArenaLootPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
+      long regenerationPeriodTicks, long destructionDelayTicks, int minItems, int maxItems) {
+    this(position, lootTable, placementMode, timedRegeneration, timedDestruction,
+        regenerationPeriodTicks, destructionDelayTicks, minItems, maxItems, "");
   }
 
   public ArenaLootChest {
     Objects.requireNonNull(position, "position");
     lootTable = List.copyOf(Objects.requireNonNull(lootTable, "lootTable"));
+    displayName = displayName == null ? "" : displayName;
     if (placementMode == null) {
       placementMode = ArenaLootPlacementMode.AUTO;
     }

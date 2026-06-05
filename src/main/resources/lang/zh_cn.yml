@@ -1,0 +1,5 @@
+plugin:
+  enabled: "MinigameLib 插件已启用。"
+  disabled: "MinigameLib 插件已禁用。"
+setup:
+  marker-tool-name: "Setup 标记木斧"
