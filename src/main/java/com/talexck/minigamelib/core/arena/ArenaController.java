@@ -44,6 +44,7 @@ import org.bukkit.block.Block;
 import org.bukkit.boss.BossBar;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.SmallFireball;
+import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
@@ -53,6 +54,7 @@ import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -104,6 +106,7 @@ public final class ArenaController implements Listener {
       throw new IllegalStateException(
           "Arena template already registered: " + template.templateId());
     }
+    sendResourcePacksToOnlinePlayers(template.defaultSettings());
   }
 
   public boolean unregisterTemplate(String templateId) {
@@ -146,6 +149,7 @@ public final class ArenaController implements Listener {
       startLootLifecycle(arena);
       listener.onArenaCreated(arena.handle());
       broadcastMessagesNow(arena, arena.settings().messages().created(), 0, null);
+      sendResourcePacksToOnlinePlayers(arena.settings());
       return arena.handle();
     });
   }
@@ -167,7 +171,6 @@ public final class ArenaController implements Listener {
             arena.settings().countdownSeconds(), null);
         sendConfiguredTitle(arena, arena.settings().title().teleport(),
             arena.settings().countdownSeconds(), null);
-        sendResourcePack(arena);
         playConfiguredSound(arena, arena.settings().sounds().teleport());
         teleportPlayersToSpawn(arena);
         giveBeginningItems(arena);
@@ -368,11 +371,12 @@ public final class ArenaController implements Listener {
     return new ChestDefinition(new ChestPosition(point.x(), point.y(), point.z()),
         chest.lootTable().stream().map(this::toChestLootEntry).toList(),
         toChestPlacementMode(chest.placementMode()), chest.timedRegeneration(),
-        chest.timedDestruction(), chest.regenerationPeriodTicks(), chest.destructionDelayTicks());
+        chest.timedDestruction(), chest.regenerationPeriodTicks(), chest.destructionDelayTicks(),
+        chest.minItems(), chest.maxItems());
   }
 
   private ChestLootEntry toChestLootEntry(ArenaLootEntry entry) {
-    return new ChestLootEntry(entry.item(), entry.weight(), entry.earliestGenerationRound());
+    return new ChestLootEntry(entry.items(), entry.weight(), entry.earliestGenerationRound());
   }
 
   private ChestPlacementMode toChestPlacementMode(ArenaLootPlacementMode mode) {
@@ -704,15 +708,23 @@ public final class ArenaController implements Listener {
     }
   }
 
-  private void sendResourcePack(RuntimeArena arena) {
-    if (!arena.settings().resourcePack().enabled()) {
+  private void sendAvailableResourcePacks(Player player) {
+    List<ArenaSettings> settings = new ArrayList<>();
+    arenas.values().stream().map(RuntimeArena::settings).forEach(settings::add);
+    templates.values().stream().map(ArenaTemplate::defaultSettings).forEach(settings::add);
+    for (ArenaSettings setting : settings) {
+      if (setting.resourcePack().enabled()) {
+        resourcePackService.sendResourcePack(player, setting.resourcePack());
+      }
+    }
+  }
+
+  private void sendResourcePacksToOnlinePlayers(ArenaSettings settings) {
+    if (!settings.resourcePack().enabled()) {
       return;
     }
-    for (String playerName : arena.playerNames()) {
-      Player player = Bukkit.getPlayerExact(playerName);
-      if (player != null) {
-        resourcePackService.sendResourcePack(player, arena.settings().resourcePack());
-      }
+    for (Player player : Bukkit.getOnlinePlayers()) {
+      resourcePackService.sendResourcePack(player, settings.resourcePack());
     }
   }
 
@@ -777,12 +789,37 @@ public final class ArenaController implements Listener {
     }
 
     Player killer = player.getKiller();
+    String killerName = null;
     if (killer != null && arena.playerNames().contains(killer.getName())) {
-      arena.recordKill(killer.getName());
+      killerName = killer.getName();
+      arena.recordKill(killerName);
+      arena.listener().onKillPlayer(arena.handle(), killerName, player.getName());
     }
+    ArenaTeamColor teamColor = arena.teamOf(player.getName()).orElse(null);
+    boolean wasFailed = arena.isFailed(player.getName());
+    boolean teamWasFailed = teamColor != null && arena.isTeamFailed(teamColor);
     arena.recordDeath(player.getName());
+    if (killerName != null) {
+      arena.listener().onPlayerKilled(arena.handle(), player.getName(), killerName);
+    }
+    if (!wasFailed && arena.isFailed(player.getName())) {
+      arena.listener().onPlayerFailed(arena.handle(), player.getName(), teamColor);
+    }
+    if (teamColor != null && !teamWasFailed && arena.isTeamFailed(teamColor)) {
+      List<String> failedTeamPlayers = arena.teams().stream()
+          .filter(team -> team.color() == teamColor)
+          .findFirst()
+          .map(ArenaTeam::playerNames)
+          .orElse(List.of());
+      arena.listener().onTeamFailed(arena.handle(), teamColor, failedTeamPlayers);
+    }
     applyScoreboards(arena, 0);
     checkVictory(arena);
+  }
+
+  @EventHandler
+  public void onPlayerJoin(PlayerJoinEvent event) {
+    Bukkit.getScheduler().runTask(plugin, () -> sendAvailableResourcePacks(event.getPlayer()));
   }
 
   @EventHandler
@@ -793,11 +830,13 @@ public final class ArenaController implements Listener {
       return;
     }
     ItemStack hand = event.getItemInHand();
-    if (findItemEntry(arena, hand, ArenaItemMode.INFINITE).isEmpty()) {
-      return;
+    if (hand.getType() == Material.TNT && findIgniteTntItem(arena, hand).isPresent()) {
+      ignitePlacedTnt(event.getBlockPlaced());
     }
-    infinitePlacedBlocks.add(blockKey(event.getBlockPlaced()));
-    Bukkit.getScheduler().runTask(plugin, () -> refillInfiniteItem(arena, player));
+    if (findItemEntry(arena, hand, ArenaItemMode.INFINITE).isPresent()) {
+      infinitePlacedBlocks.add(blockKey(event.getBlockPlaced()));
+      Bukkit.getScheduler().runTask(plugin, () -> refillInfiniteItem(arena, player));
+    }
   }
 
   @EventHandler
@@ -882,8 +921,25 @@ public final class ArenaController implements Listener {
   private List<ArenaItemEntry> allConfiguredItems(RuntimeArena arena) {
     List<ArenaItemEntry> items = new ArrayList<>(arena.settings().beginningItems());
     arena.settings().lootChests().stream().flatMap(chest -> chest.lootTable().stream())
-        .map(ArenaLootEntry::item).forEach(items::add);
+        .flatMap(entry -> entry.items().stream()).forEach(items::add);
     return items;
+  }
+
+  private Optional<ArenaItemEntry> findIgniteTntItem(RuntimeArena arena, ItemStack stack) {
+    if (stack == null || stack.getType() != Material.TNT) {
+      return Optional.empty();
+    }
+    return allConfiguredItems(arena).stream()
+        .filter(ArenaItemEntry::igniteTntOnPlace)
+        .filter(entry -> entry.item().getType() == Material.TNT)
+        .filter(entry -> matchesArenaItem(arena, stack, entry))
+        .findFirst();
+  }
+
+  private void ignitePlacedTnt(Block block) {
+    Location location = block.getLocation().add(0.5, 0.0, 0.5);
+    block.setType(Material.AIR);
+    block.getWorld().spawn(location, TNTPrimed.class);
   }
 
   private boolean matchesArenaItem(RuntimeArena arena, ItemStack stack, ArenaItemEntry entry) {
@@ -984,15 +1040,24 @@ public final class ArenaController implements Listener {
   }
 
   private List<ArenaTeam> resolveTeams(ArenaCreateRequest request) {
-    if (!request.initialTeams().isEmpty()) {
-      return request.initialTeams();
-    }
-
-    ArenaTeamColor[] colors = ArenaTeamColor.values();
+    ArenaLayout layout = request.layout() != null ? request.layout()
+        : templates.get(request.templateId()).defaultLayout();
+    List<ArenaTeamColor> configuredColors = layout.teamSpawns().stream()
+        .map(ArenaTeamSpawn::color)
+        .distinct()
+        .toList();
+    ArenaTeamColor[] colors = configuredColors.isEmpty()
+        ? ArenaTeamColor.values()
+        : configuredColors.toArray(ArenaTeamColor[]::new);
+    int teamCount = Math.min(request.initialPlayerNames().size(), colors.length);
     List<ArenaTeam> teams = new ArrayList<>();
-    for (int index = 0; index < request.initialPlayerNames().size(); index++) {
-      ArenaTeamColor color = colors[index % colors.length];
-      teams.add(new ArenaTeam(color, List.of(request.initialPlayerNames().get(index))));
+    for (int teamIndex = 0; teamIndex < teamCount; teamIndex++) {
+      List<String> playerNames = new ArrayList<>();
+      for (int playerIndex = teamIndex; playerIndex < request.initialPlayerNames().size();
+          playerIndex += teamCount) {
+        playerNames.add(request.initialPlayerNames().get(playerIndex));
+      }
+      teams.add(new ArenaTeam(colors[teamIndex], playerNames));
     }
     return teams;
   }

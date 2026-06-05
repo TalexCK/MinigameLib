@@ -10,7 +10,16 @@ public record ArenaLootChest(
     boolean timedRegeneration,
     boolean timedDestruction,
     long regenerationPeriodTicks,
-    long destructionDelayTicks) {
+    long destructionDelayTicks,
+    int minItems,
+    int maxItems) {
+
+  public ArenaLootChest(ArenaPoint position, List<ArenaLootEntry> lootTable,
+      ArenaLootPlacementMode placementMode, boolean timedRegeneration, boolean timedDestruction,
+      long regenerationPeriodTicks, long destructionDelayTicks) {
+    this(position, lootTable, placementMode, timedRegeneration, timedDestruction,
+        regenerationPeriodTicks, destructionDelayTicks, 0, 27);
+  }
 
   public ArenaLootChest {
     Objects.requireNonNull(position, "position");
@@ -20,6 +29,9 @@ public record ArenaLootChest(
     }
     if (regenerationPeriodTicks < 0 || destructionDelayTicks < 0) {
       throw new IllegalArgumentException("loot chest timings cannot be negative");
+    }
+    if (minItems < 0 || maxItems < 0 || minItems > maxItems) {
+      throw new IllegalArgumentException("loot chest item counts are invalid");
     }
   }
 }

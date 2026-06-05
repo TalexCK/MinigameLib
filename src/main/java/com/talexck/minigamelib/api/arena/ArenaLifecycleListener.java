@@ -2,6 +2,8 @@ package com.talexck.minigamelib.api.arena;
 
 import org.bukkit.Location;
 
+import java.util.List;
+
 public interface ArenaLifecycleListener {
 
   static ArenaLifecycleListener noop() {
@@ -21,6 +23,18 @@ public interface ArenaLifecycleListener {
   }
 
   default void onGameStarted(ArenaHandle arena) {
+  }
+
+  default void onKillPlayer(ArenaHandle arena, String killerName, String victimName) {
+  }
+
+  default void onPlayerKilled(ArenaHandle arena, String playerName, String killerName) {
+  }
+
+  default void onPlayerFailed(ArenaHandle arena, String playerName, ArenaTeamColor teamColor) {
+  }
+
+  default void onTeamFailed(ArenaHandle arena, ArenaTeamColor teamColor, List<String> playerNames) {
   }
 
   default void onGameStopped(ArenaHandle arena, ArenaStopReason reason) {

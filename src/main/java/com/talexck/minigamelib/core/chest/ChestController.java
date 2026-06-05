@@ -126,13 +126,18 @@ public final class ChestController {
 
     List<ItemStack> selected = new ArrayList<>();
     List<ChestLootEntry> pool = new ArrayList<>(eligibleEntries);
-    int maxItems = Math.min(pool.size(), 27);
-    for (int index = 0; index < maxItems; index++) {
+    int minItems = Math.min(definition.minItems(), pool.size());
+    int maxItems = Math.min(definition.maxItems(), pool.size());
+    int itemCount = minItems >= maxItems
+        ? minItems
+        : minItems + random.nextInt(maxItems - minItems + 1);
+    for (int index = 0; index < itemCount; index++) {
       ChestLootEntry entry = takeWeighted(pool);
       if (entry == null) {
         break;
       }
-      selected.add(entry.item().createStack());
+      entry.items().stream().map(com.talexck.minigamelib.api.arena.ArenaItemEntry::createStack)
+          .forEach(selected::add);
       pool.remove(entry);
     }
     return selected;

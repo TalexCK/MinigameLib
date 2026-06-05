@@ -11,7 +11,13 @@ public record ArenaItemEntry(
     ItemStack item,
     int number,
     ArenaItemMode mode,
-    ArenaPotionItemConfig potionConfig) {
+    ArenaPotionItemConfig potionConfig,
+    boolean igniteTntOnPlace) {
+
+  public ArenaItemEntry(String name, ItemStack item, int number, ArenaItemMode mode,
+      ArenaPotionItemConfig potionConfig) {
+    this(name, item, number, mode, potionConfig, false);
+  }
 
   public ArenaItemEntry {
     name = name == null ? "" : name;

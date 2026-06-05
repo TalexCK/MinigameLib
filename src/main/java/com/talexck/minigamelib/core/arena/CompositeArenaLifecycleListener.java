@@ -5,6 +5,7 @@ import com.talexck.minigamelib.api.arena.ArenaGameResult;
 import com.talexck.minigamelib.api.arena.ArenaLifecycleListener;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
+import com.talexck.minigamelib.api.arena.ArenaTeamColor;
 import org.bukkit.Location;
 
 import java.util.ArrayList;
@@ -56,6 +57,26 @@ final class CompositeArenaLifecycleListener implements ArenaLifecycleListener {
   @Override
   public void onGameStarted(ArenaHandle arena) {
     listeners.forEach(listener -> listener.onGameStarted(arena));
+  }
+
+  @Override
+  public void onKillPlayer(ArenaHandle arena, String killerName, String victimName) {
+    listeners.forEach(listener -> listener.onKillPlayer(arena, killerName, victimName));
+  }
+
+  @Override
+  public void onPlayerKilled(ArenaHandle arena, String playerName, String killerName) {
+    listeners.forEach(listener -> listener.onPlayerKilled(arena, playerName, killerName));
+  }
+
+  @Override
+  public void onPlayerFailed(ArenaHandle arena, String playerName, ArenaTeamColor teamColor) {
+    listeners.forEach(listener -> listener.onPlayerFailed(arena, playerName, teamColor));
+  }
+
+  @Override
+  public void onTeamFailed(ArenaHandle arena, ArenaTeamColor teamColor, List<String> playerNames) {
+    listeners.forEach(listener -> listener.onTeamFailed(arena, teamColor, playerNames));
   }
 
   @Override
