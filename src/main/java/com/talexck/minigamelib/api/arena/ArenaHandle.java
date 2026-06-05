@@ -9,5 +9,6 @@ public record ArenaHandle(
     ArenaStatus status,
     ArenaLayout layout,
     ArenaSettings settings,
-    List<String> playerNames) {
+    List<String> playerNames,
+    List<ArenaTeam> teams) {
 }

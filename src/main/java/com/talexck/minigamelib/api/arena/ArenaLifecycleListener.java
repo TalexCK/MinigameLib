@@ -26,6 +26,9 @@ public interface ArenaLifecycleListener {
   default void onGameStopped(ArenaHandle arena, ArenaStopReason reason) {
   }
 
+  default void onGameEnded(ArenaHandle arena, ArenaGameResult result) {
+  }
+
   default void onArenaDestroyed(ArenaHandle arena) {
   }
 }

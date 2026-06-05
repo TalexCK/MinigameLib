@@ -1,6 +1,7 @@
 package com.talexck.minigamelib.core.arena;
 
 import com.talexck.minigamelib.api.arena.ArenaHandle;
+import com.talexck.minigamelib.api.arena.ArenaGameResult;
 import com.talexck.minigamelib.api.arena.ArenaLifecycleListener;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
@@ -60,6 +61,11 @@ final class CompositeArenaLifecycleListener implements ArenaLifecycleListener {
   @Override
   public void onGameStopped(ArenaHandle arena, ArenaStopReason reason) {
     listeners.forEach(listener -> listener.onGameStopped(arena, reason));
+  }
+
+  @Override
+  public void onGameEnded(ArenaHandle arena, ArenaGameResult result) {
+    listeners.forEach(listener -> listener.onGameEnded(arena, result));
   }
 
   @Override

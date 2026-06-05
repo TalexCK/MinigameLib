@@ -3,6 +3,7 @@ package com.talexck.minigamelib.core.arena;
 import com.talexck.minigamelib.api.arena.ArenaCreateRequest;
 import com.talexck.minigamelib.api.arena.ArenaHandle;
 import com.talexck.minigamelib.api.arena.ArenaService;
+import com.talexck.minigamelib.api.arena.ArenaSound;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import com.talexck.minigamelib.api.arena.ArenaTemplate;
@@ -74,6 +75,11 @@ public final class DefaultArenaService implements ArenaService {
   @Override
   public CompletableFuture<Void> sendTitle(String arenaId, ArenaTitleFrame title) {
     return controller.sendTitle(arenaId, title);
+  }
+
+  @Override
+  public CompletableFuture<Void> playSound(String arenaId, ArenaSound sound) {
+    return controller.playSound(arenaId, sound);
   }
 
   @Override

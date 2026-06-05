@@ -28,6 +28,8 @@ public interface ArenaService {
 
   CompletableFuture<Void> sendTitle(String arenaId, ArenaTitleFrame title);
 
+  CompletableFuture<Void> playSound(String arenaId, ArenaSound sound);
+
   CompletableFuture<Void> updateBossBar(String arenaId, String title, double progress);
 
   Optional<ArenaHandle> findArena(String arenaId);

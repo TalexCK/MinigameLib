@@ -10,6 +10,7 @@ public record ArenaCreateRequest(
     ArenaLayout layout,
     ArenaSettings settings,
     List<String> initialPlayerNames,
+    List<ArenaTeam> initialTeams,
     ArenaLifecycleListener listener) {
 
   public ArenaCreateRequest {
@@ -17,6 +18,7 @@ public record ArenaCreateRequest(
     Objects.requireNonNull(templateId, "templateId");
     Objects.requireNonNull(runtimeWorldName, "runtimeWorldName");
     initialPlayerNames = List.copyOf(Objects.requireNonNull(initialPlayerNames, "initialPlayerNames"));
+    initialTeams = List.copyOf(Objects.requireNonNullElse(initialTeams, List.of()));
     if (arenaId.isBlank()) {
       throw new IllegalArgumentException("arenaId cannot be blank");
     }
