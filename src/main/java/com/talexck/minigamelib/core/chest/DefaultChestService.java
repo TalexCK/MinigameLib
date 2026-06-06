@@ -2,6 +2,7 @@ package com.talexck.minigamelib.core.chest;
 
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.block.Block;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
@@ -22,5 +23,9 @@ public final class DefaultChestService {
 
   public void stopArenaChests(String arenaId, boolean destroyChests) {
     controller.stopArenaChests(arenaId, destroyChests);
+  }
+
+  public boolean isActiveChest(Block block) {
+    return controller.isActiveChest(block);
   }
 }

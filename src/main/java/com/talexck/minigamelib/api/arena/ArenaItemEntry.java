@@ -2,6 +2,7 @@ package com.talexck.minigamelib.api.arena;
 
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.NamespacedKey;
 import net.kyori.adventure.text.Component;
 
 import java.util.Objects;
@@ -12,11 +13,17 @@ public record ArenaItemEntry(
     int number,
     ArenaItemMode mode,
     ArenaPotionItemConfig potionConfig,
-    boolean igniteTntOnPlace) {
+    boolean igniteTntOnPlace,
+    boolean splitInLoot) {
 
   public ArenaItemEntry(String name, ItemStack item, int number, ArenaItemMode mode,
       ArenaPotionItemConfig potionConfig) {
-    this(name, item, number, mode, potionConfig, false);
+    this(name, item, number, mode, potionConfig, false, false);
+  }
+
+  public ArenaItemEntry(String name, ItemStack item, int number, ArenaItemMode mode,
+      ArenaPotionItemConfig potionConfig, boolean igniteTntOnPlace) {
+    this(name, item, number, mode, potionConfig, igniteTntOnPlace, false);
   }
 
   public ArenaItemEntry {
@@ -35,16 +42,38 @@ public record ArenaItemEntry(
     item = item.clone();
   }
 
+  @SuppressWarnings("deprecation")
   public ItemStack createStack() {
     ItemStack stack = item.clone();
     stack.setAmount(number);
-    if (!name.isBlank()) {
+    if (!name.isBlank() || hasCustomPotionVisual()) {
       ItemMeta meta = stack.getItemMeta();
       if (meta != null) {
-        meta.displayName(Component.text(name));
+        if (!name.isBlank()) {
+          meta.displayName(Component.text(name));
+        }
+        if (potionConfig != null && potionConfig.projectileCustomModelData() > 0) {
+          meta.setCustomModelData(potionConfig.projectileCustomModelData());
+        }
+        applyItemModel(meta);
         stack.setItemMeta(meta);
       }
     }
     return stack;
+  }
+
+  private boolean hasCustomPotionVisual() {
+    return potionConfig != null
+        && (potionConfig.projectileCustomModelData() > 0 || !potionConfig.itemModelKey().isBlank());
+  }
+
+  private void applyItemModel(ItemMeta meta) {
+    if (potionConfig == null || potionConfig.itemModelKey().isBlank()) {
+      return;
+    }
+    NamespacedKey key = NamespacedKey.fromString(potionConfig.itemModelKey());
+    if (key != null) {
+      meta.setItemModel(key);
+    }
   }
 }

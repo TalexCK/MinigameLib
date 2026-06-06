@@ -21,8 +21,10 @@ public final class LanguageService {
     plugin.saveDefaultConfig();
     String language = plugin.getConfig().getString("language", DEFAULT_LANGUAGE);
     String resourcePath = "lang/" + language + ".yml";
-    plugin.saveResource(resourcePath, false);
     File file = new File(plugin.getDataFolder(), resourcePath);
+    if (!file.isFile()) {
+      plugin.saveResource(resourcePath, false);
+    }
     this.messages = YamlConfiguration.loadConfiguration(file);
   }
 

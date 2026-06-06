@@ -76,6 +76,11 @@ public final class WorldController {
     return unloaded;
   }
 
+  public CompletableFuture<Boolean> deleteWorldDirectory(String worldName) {
+    return CompletableFuture.supplyAsync(() -> repository.deleteWorldDirectory(worldName),
+        ioExecutor);
+  }
+
   public void shutdown() {
     ioExecutor.shutdownNow();
   }

@@ -17,9 +17,23 @@ public record ArenaSettings(
     List<ArenaItemEntry> beginningItems,
     List<ArenaLootChest> lootChests,
     ArenaBoundaryWall initialBoundaryWall,
+    ArenaVerticalBoundary verticalBoundary,
     List<ArenaBoundaryStage> boundaryStages,
     ArenaVictoryCondition victoryCondition,
     ArenaMessages messages) {
+
+  public ArenaSettings(int countdownSeconds, String returnWorldName, ArenaPoint returnPoint,
+      boolean saveWorldOnUnload, ArenaScoreboardConfig scoreboard, ArenaBossBarConfig bossBar,
+      ArenaActionBarConfig actionBar, ArenaTitleConfig title, ArenaSoundConfig sounds,
+      ArenaResourcePackConfig resourcePack, List<ArenaItemEntry> beginningItems,
+      List<ArenaLootChest> lootChests, ArenaBoundaryWall initialBoundaryWall,
+      List<ArenaBoundaryStage> boundaryStages, ArenaVictoryCondition victoryCondition,
+      ArenaMessages messages) {
+    this(countdownSeconds, returnWorldName, returnPoint, saveWorldOnUnload, scoreboard, bossBar,
+        actionBar, title, sounds, resourcePack, beginningItems, lootChests, initialBoundaryWall,
+        new ArenaVerticalBoundary(ArenaVerticalBoundary.DISABLED, ArenaVerticalBoundary.DISABLED),
+        boundaryStages, victoryCondition, messages);
+  }
 
   public ArenaSettings {
     Objects.requireNonNull(returnWorldName, "returnWorldName");
@@ -50,6 +64,10 @@ public record ArenaSettings(
     }
     if (messages == null) {
       messages = ArenaMessages.defaults();
+    }
+    if (verticalBoundary == null) {
+      verticalBoundary = new ArenaVerticalBoundary(ArenaVerticalBoundary.DISABLED,
+          ArenaVerticalBoundary.DISABLED);
     }
     if (countdownSeconds < 0) {
       throw new IllegalArgumentException("countdownSeconds cannot be negative");

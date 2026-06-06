@@ -10,12 +10,25 @@ public record ArenaPotionItemConfig(
     Duration duration,
     PotionEffectType effectType,
     int amplifier,
-    Duration effectDuration) {
+    Duration effectDuration,
+    int projectileCustomModelData,
+    String itemModelKey) {
+
+  public ArenaPotionItemConfig(double radius, Duration duration, PotionEffectType effectType,
+      int amplifier, Duration effectDuration) {
+    this(radius, duration, effectType, amplifier, effectDuration, 0, "");
+  }
+
+  public ArenaPotionItemConfig(double radius, Duration duration, PotionEffectType effectType,
+      int amplifier, Duration effectDuration, int projectileCustomModelData) {
+    this(radius, duration, effectType, amplifier, effectDuration, projectileCustomModelData, "");
+  }
 
   public ArenaPotionItemConfig {
     Objects.requireNonNull(duration, "duration");
     Objects.requireNonNull(effectType, "effectType");
     Objects.requireNonNull(effectDuration, "effectDuration");
+    itemModelKey = itemModelKey == null ? "" : itemModelKey;
     if (radius <= 0) {
       throw new IllegalArgumentException("radius must be positive");
     }

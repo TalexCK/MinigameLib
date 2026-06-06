@@ -4,6 +4,7 @@ public enum ArenaStatus {
   CREATED,
   COUNTDOWN,
   RUNNING,
+  STOPPED,
   STOPPING,
   DESTROYED
 }

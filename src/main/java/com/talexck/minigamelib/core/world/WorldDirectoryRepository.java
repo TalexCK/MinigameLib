@@ -6,11 +6,13 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
 import java.util.Set;
 
 public final class WorldDirectoryRepository {
 
   private static final Set<String> SKIPPED_FILES = Set.of("uid.dat", "session.lock");
+  private static final String TEMPLATE_WORLD_FOLDER = "arena";
 
   private final Path worldContainer;
 
@@ -19,7 +21,7 @@ public final class WorldDirectoryRepository {
   }
 
   public WorldCopyResult copyTemplateWorld(WorldCreateRequest request, Instant startedAt) {
-    Path source = worldContainer.resolve("world_templates").resolve(request.templateWorldName());
+    Path source = worldContainer.resolve(TEMPLATE_WORLD_FOLDER).resolve(request.templateWorldName());
     Path target = worldContainer.resolve(request.runtimeWorldName());
 
     if (!Files.isDirectory(source)) {
@@ -38,6 +40,30 @@ public final class WorldDirectoryRepository {
 
     return new WorldCopyResult(request.templateWorldName(), request.runtimeWorldName(), source,
         target, Duration.between(startedAt, Instant.now()));
+  }
+
+  public boolean deleteWorldDirectory(String worldName) {
+    if (worldName == null || worldName.isBlank() || worldName.equals("world")
+        || worldName.contains("/") || worldName.contains("\\") || worldName.equals(".")
+        || worldName.equals("..")) {
+      throw new IllegalArgumentException("Unsafe world directory: " + worldName);
+    }
+    Path normalizedContainer = worldContainer.toAbsolutePath().normalize();
+    Path target = normalizedContainer.resolve(worldName).normalize();
+    if (target.equals(normalizedContainer) || !target.startsWith(normalizedContainer)) {
+      throw new IllegalArgumentException("Unsafe world directory: " + worldName);
+    }
+    if (!Files.exists(target)) {
+      return false;
+    }
+    try (var stream = Files.walk(target)) {
+      for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) {
+        Files.deleteIfExists(path);
+      }
+      return true;
+    } catch (IOException exception) {
+      throw new IllegalStateException("Failed to delete world: " + worldName, exception);
+    }
   }
 
   private void copyDirectory(Path source, Path target) throws IOException {

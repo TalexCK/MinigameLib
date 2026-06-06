@@ -5,7 +5,14 @@ import java.util.Objects;
 
 public record ArenaCreateRequest(String arenaId, String templateId, String runtimeWorldName,
     ArenaLayout layout, ArenaSettings settings, List<String> initialPlayerNames,
-    ArenaLifecycleListener listener) {
+    ArenaLifecycleListener listener, boolean allowSinglePlayer) {
+
+  public ArenaCreateRequest(String arenaId, String templateId, String runtimeWorldName,
+      ArenaLayout layout, ArenaSettings settings, List<String> initialPlayerNames,
+      ArenaLifecycleListener listener) {
+    this(arenaId, templateId, runtimeWorldName, layout, settings, initialPlayerNames, listener,
+        false);
+  }
 
   public ArenaCreateRequest {
     Objects.requireNonNull(arenaId, "arenaId");

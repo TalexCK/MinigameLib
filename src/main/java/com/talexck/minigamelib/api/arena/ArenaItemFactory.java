@@ -24,6 +24,34 @@ public final class ArenaItemFactory {
     return item(name, material, amount, mode, List.of(), material == Material.TNT);
   }
 
+  public static ArenaItemEntry infiniteOffhandBlock(String name, Material material, int amount) {
+    return item(name, material, amount, ArenaItemMode.INFINITE_OFFHAND);
+  }
+
+  public static ArenaItemEntry teamLeatherHelmet(String name) {
+    return teamLeatherArmor(name, Material.LEATHER_HELMET);
+  }
+
+  public static ArenaItemEntry teamLeatherChestplate(String name) {
+    return teamLeatherArmor(name, Material.LEATHER_CHESTPLATE);
+  }
+
+  public static ArenaItemEntry teamLeatherLeggings(String name) {
+    return teamLeatherArmor(name, Material.LEATHER_LEGGINGS);
+  }
+
+  public static ArenaItemEntry teamLeatherBoots(String name) {
+    return teamLeatherArmor(name, Material.LEATHER_BOOTS);
+  }
+
+  public static ArenaItemEntry teamLeatherArmor(String name, Material material) {
+    if (material != Material.LEATHER_HELMET && material != Material.LEATHER_CHESTPLATE
+        && material != Material.LEATHER_LEGGINGS && material != Material.LEATHER_BOOTS) {
+      throw new IllegalArgumentException("material must be leather armor");
+    }
+    return item(name, material, 1, ArenaItemMode.TEAM_LEATHER_ARMOR);
+  }
+
   public static ArenaItemEntry item(String name, Material material, int amount,
       List<ArenaItemEnchantment> enchantments) {
     return item(name, material, amount, ArenaItemMode.DEFAULT, enchantments,
@@ -32,11 +60,16 @@ public final class ArenaItemFactory {
 
   public static ArenaItemEntry item(String name, Material material, int amount, ArenaItemMode mode,
       List<ArenaItemEnchantment> enchantments, boolean igniteTntOnPlace) {
+    return item(name, material, amount, mode, enchantments, igniteTntOnPlace, false);
+  }
+
+  public static ArenaItemEntry item(String name, Material material, int amount, ArenaItemMode mode,
+      List<ArenaItemEnchantment> enchantments, boolean igniteTntOnPlace, boolean splitInLoot) {
     ItemStack stack = new ItemStack(material);
     for (ArenaItemEnchantment enchantment : enchantments) {
       stack.addUnsafeEnchantment(resolveEnchantment(enchantment.key()), enchantment.level());
     }
-    return new ArenaItemEntry(name, stack, amount, mode, null, igniteTntOnPlace);
+    return new ArenaItemEntry(name, stack, amount, mode, null, igniteTntOnPlace, splitInLoot);
   }
 
   private static Enchantment resolveEnchantment(String key) {

@@ -31,11 +31,16 @@ final class RuntimeArena {
   private final List<String> playerNames;
   private final Map<String, PlayerRuntimeStats> playerStats = new HashMap<>();
   private final Map<ArenaTeamColor, Boolean> teamFailures = new EnumMap<>(ArenaTeamColor.class);
+  private final List<ArenaTeamColor> teamFailureOrder = new ArrayList<>();
   private final List<BukkitTask> boundaryTasks = new ArrayList<>();
   private final ArenaLifecycleListener listener;
   private volatile ArenaStatus status = ArenaStatus.CREATED;
+  private long gameStartedAtMillis;
   private ArenaTeamColor winningTeam;
   private BossBar bossBar;
+  private String tabScoreboardName;
+  private String tabBossBarName;
+  private int tabLayoutRevision;
 
   RuntimeArena(String arenaId, String templateId, RuntimeWorld world, ArenaLayout layout,
       ArenaSettings settings, List<ArenaTeam> teams, ArenaLifecycleListener listener) {
@@ -128,12 +133,70 @@ final class RuntimeArena {
     return aliveTeams.size() == 1 ? Optional.of(aliveTeams.getFirst()) : Optional.empty();
   }
 
+  long aliveTeamCount() {
+    return teams.stream()
+        .map(ArenaTeam::color)
+        .filter(color -> !isTeamFailed(color))
+        .count();
+  }
+
   void setWinningTeam(ArenaTeamColor winningTeam) {
     this.winningTeam = winningTeam;
   }
 
   ArenaTeamColor winningTeam() {
     return winningTeam;
+  }
+
+  void markGameStarted(long nowMillis) {
+    this.gameStartedAtMillis = nowMillis;
+  }
+
+  long gameStartedAtMillis() {
+    return gameStartedAtMillis;
+  }
+
+  long playerSurvivalSeconds(String playerName, long nowMillis) {
+    PlayerRuntimeStats stats = playerStats.get(playerName);
+    if (stats == null || gameStartedAtMillis <= 0L) {
+      return 0L;
+    }
+    long end = stats.failedAtMillis() > 0L ? stats.failedAtMillis() : nowMillis;
+    return Math.max(0L, (end - gameStartedAtMillis) / 1000L);
+  }
+
+  long teamSurvivalSeconds(ArenaTeam team, long nowMillis) {
+    return team.playerNames().stream()
+        .mapToLong(playerName -> playerSurvivalSeconds(playerName, nowMillis))
+        .sum();
+  }
+
+  int teamScore(ArenaTeam team, long nowMillis) {
+    return teamKills(team) * 20 + Math.toIntExact(Math.min(Integer.MAX_VALUE,
+        teamSurvivalSeconds(team, nowMillis)));
+  }
+
+  int teamKills(ArenaTeam team) {
+    return team.playerNames().stream()
+        .map(playerStats::get)
+        .filter(stats -> stats != null)
+        .mapToInt(PlayerRuntimeStats::kills)
+        .sum();
+  }
+
+  List<ArenaTeamColor> finalTeamRanking() {
+    List<ArenaTeamColor> ranking = new ArrayList<>();
+    teams.stream()
+        .map(ArenaTeam::color)
+        .filter(color -> !teamFailures.getOrDefault(color, false))
+        .forEach(ranking::add);
+    for (int index = teamFailureOrder.size() - 1; index >= 0; index--) {
+      ArenaTeamColor color = teamFailureOrder.get(index);
+      if (!ranking.contains(color)) {
+        ranking.add(color);
+      }
+    }
+    return List.copyOf(ranking);
   }
 
   List<ArenaPlayerStats> playerStats() {
@@ -171,6 +234,26 @@ final class RuntimeArena {
     this.bossBar = bossBar;
   }
 
+  String tabScoreboardName() {
+    return tabScoreboardName;
+  }
+
+  void setTabScoreboardName(String tabScoreboardName) {
+    this.tabScoreboardName = tabScoreboardName;
+  }
+
+  String tabBossBarName() {
+    return tabBossBarName;
+  }
+
+  void setTabBossBarName(String tabBossBarName) {
+    this.tabBossBarName = tabBossBarName;
+  }
+
+  int nextTabLayoutRevision() {
+    return ++tabLayoutRevision;
+  }
+
   ArenaHandle handle() {
     return new ArenaHandle(arenaId, templateId, world.runtimeWorldName(), status, layout, settings,
         playerNames, teams);
@@ -192,6 +275,9 @@ final class RuntimeArena {
         .map(team -> team.playerNames().stream().allMatch(this::isFailed))
         .orElse(true);
     teamFailures.put(color, failed);
+    if (failed && !teamFailureOrder.contains(color)) {
+      teamFailureOrder.add(color);
+    }
   }
 
   private static final class PlayerRuntimeStats {
@@ -201,6 +287,7 @@ final class RuntimeArena {
     private int kills;
     private int deaths;
     private boolean failed;
+    private long failedAtMillis;
 
     private PlayerRuntimeStats(String playerName, ArenaTeamColor teamColor) {
       this.playerName = playerName;
@@ -223,6 +310,10 @@ final class RuntimeArena {
       return failed;
     }
 
+    private long failedAtMillis() {
+      return failedAtMillis;
+    }
+
     private void addKill() {
       kills++;
     }
@@ -232,6 +323,9 @@ final class RuntimeArena {
     }
 
     private void setFailed(boolean failed) {
+      if (failed && !this.failed) {
+        this.failedAtMillis = System.currentTimeMillis();
+      }
       this.failed = failed;
     }
 

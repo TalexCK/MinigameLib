@@ -115,13 +115,13 @@ registerTemplate
 
 ```text
 server-root/
-├── world_templates/
+├── arena/
 │   └── skybattle_map_01/
 └── plugins/
     └── MinigameLib/
 ```
 
-`ArenaTemplate.templateWorldName` 对应 `world_templates` 下的目录名。
+`ArenaTemplate.templateWorldName` 对应 `arena` 下的目录名。
 
 `ArenaCreateRequest.runtimeWorldName` 是本局运行世界名。
 

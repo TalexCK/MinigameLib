@@ -3,6 +3,7 @@ package com.talexck.minigamelib;
 import com.talexck.minigamelib.api.MinigameLibrary;
 import com.talexck.minigamelib.core.MinigameLibraryImpl;
 import com.talexck.minigamelib.core.lang.LanguageService;
+import com.talexck.minigamelib.core.tab.TabFeatureConfigurer;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.ServicePriority;
@@ -15,6 +16,7 @@ public final class MinigameLibPlugin extends JavaPlugin {
   @Override
   public void onEnable() {
     this.language = new LanguageService(this);
+    new TabFeatureConfigurer(this).ensureEnabled();
     this.library = new MinigameLibraryImpl(this, language);
     Bukkit.getServicesManager().register(MinigameLibrary.class, library, this,
         ServicePriority.Normal);

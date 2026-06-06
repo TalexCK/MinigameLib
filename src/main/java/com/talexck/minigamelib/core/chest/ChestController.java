@@ -1,12 +1,19 @@
 package com.talexck.minigamelib.core.chest;
 
 import net.kyori.adventure.text.Component;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Chest;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
@@ -20,7 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.BiConsumer;
 
-public final class ChestController {
+public final class ChestController implements Listener {
 
   private static final long DEFAULT_REGENERATION_PERIOD_TICKS = 20L * 60L;
   private static final long DEFAULT_DESTRUCTION_DELAY_TICKS = 20L * 60L;
@@ -28,9 +35,11 @@ public final class ChestController {
   private final JavaPlugin plugin;
   private final Random random = new Random();
   private final ConcurrentMap<String, ArenaChestSession> sessions = new ConcurrentHashMap<>();
+  private final ConcurrentMap<String, String> activeChestArenaIds = new ConcurrentHashMap<>();
 
   public ChestController(JavaPlugin plugin) {
     this.plugin = plugin;
+    plugin.getServer().getPluginManager().registerEvents(this, plugin);
   }
 
   public void startArenaChests(String arenaId, World world, List<ChestDefinition> definitions,
@@ -58,6 +67,7 @@ public final class ChestController {
     if (destroyChests) {
       destroyChests(session);
     }
+    activeChestArenaIds.entrySet().removeIf(entry -> entry.getValue().equals(arenaId));
   }
 
   private void scheduleRegeneration(String arenaId, ArenaChestSession session,
@@ -137,11 +147,45 @@ public final class ChestController {
       if (entry == null) {
         break;
       }
-      entry.items().stream().map(com.talexck.minigamelib.api.arena.ArenaItemEntry::createStack)
-          .forEach(selected::add);
+      selected.addAll(lootStacks(entry, definition.splitStacks()));
       pool.remove(entry);
     }
     return selected;
+  }
+
+  private List<ItemStack> lootStacks(ChestLootEntry entry, boolean chestSplitsStacks) {
+    List<ItemStack> result = new ArrayList<>();
+    List<com.talexck.minigamelib.api.arena.ArenaItemEntry> items = entry.items();
+    if (!chestSplitsStacks) {
+      for (com.talexck.minigamelib.api.arena.ArenaItemEntry item : items) {
+        result.addAll(lootStacks(item, false));
+      }
+      return result;
+    }
+    for (int index = items.size() - 1; index >= 0; index--) {
+      result.addAll(lootStacks(items.get(index), true));
+    }
+    return result;
+  }
+
+  private List<ItemStack> lootStacks(com.talexck.minigamelib.api.arena.ArenaItemEntry item,
+      boolean chestSplitsStacks) {
+    ItemStack stack = item.createStack();
+    if (chestSplitsStacks && item.splitInLoot()) {
+      return splitStack(stack);
+    }
+    return List.of(stack);
+  }
+
+  private List<ItemStack> splitStack(ItemStack stack) {
+    List<ItemStack> result = new ArrayList<>();
+    int amount = Math.max(1, stack.getAmount());
+    for (int index = 0; index < amount; index++) {
+      ItemStack single = stack.clone();
+      single.setAmount(1);
+      result.add(single);
+    }
+    return result;
   }
 
   private ChestLootEntry takeWeighted(List<ChestLootEntry> entries) {
@@ -161,7 +205,7 @@ public final class ChestController {
 
   private void fillChest(Location location, List<ItemStack> loot, ChestDefinition definition) {
     Block block = location.getBlock();
-    block.setType(Material.CHEST);
+    block.setType(resolveChestMaterial(definition.blockMaterial()));
     if (!(block.getState() instanceof Chest chest)) {
       return;
     }
@@ -176,6 +220,10 @@ public final class ChestController {
     for (int index = 0; index < loot.size() && index < slots.size(); index++) {
       inventory.setItem(slots.get(index), loot.get(index));
     }
+    sessions.entrySet().stream()
+        .filter(entry -> entry.getValue().world().equals(location.getWorld()))
+        .findFirst()
+        .ifPresent(entry -> activeChestArenaIds.put(blockKey(block), entry.getKey()));
   }
 
   private List<Integer> resolveSlots(int inventorySize, int lootSize, ChestPlacementMode mode) {
@@ -185,7 +233,29 @@ public final class ChestController {
     if (resolvedMode == ChestPlacementMode.CENTER) {
       return List.of(inventorySize / 2);
     }
+    if (inventorySize >= 27) {
+      return centeredSlots(lootSize);
+    }
     return mirroredSlots(inventorySize, lootSize);
+  }
+
+  private List<Integer> centeredSlots(int lootSize) {
+    return switch (lootSize) {
+      case 0 -> List.of();
+      case 1 -> List.of(13);
+      case 2 -> List.of(12, 14);
+      case 3 -> List.of(12, 13, 14);
+      case 4 -> List.of(11, 12, 14, 15);
+      case 5 -> List.of(4, 12, 13, 14, 22);
+      case 6 -> List.of(3, 5, 12, 14, 21, 23);
+      case 7 -> List.of(3, 4, 5, 12, 14, 21, 22);
+      case 8 -> List.of(3, 4, 5, 12, 13, 14, 21, 22);
+      case 9 -> List.of(3, 4, 5, 12, 13, 14, 21, 22, 23);
+      case 10 -> List.of(2, 5, 11, 12, 13, 14, 20, 21, 22, 23);
+      case 11 -> List.of(2, 4, 6, 11, 12, 13, 14, 20, 21, 22, 23);
+      case 12 -> List.of(2, 3, 4, 5, 11, 12, 13, 14, 20, 21, 22, 23);
+      default -> mirroredSlots(27, lootSize);
+    };
   }
 
   private List<Integer> mirroredSlots(int inventorySize, int lootSize) {
@@ -212,9 +282,67 @@ public final class ChestController {
 
   private void destroyChest(World world, ChestDefinition definition) {
     Block block = definition.position().toLocation(world).getBlock();
-    if (block.getType() == Material.CHEST) {
+    if (isActiveChest(block)) {
       block.setType(Material.AIR);
     }
+    activeChestArenaIds.remove(blockKey(block));
+  }
+
+  public boolean isActiveChest(Block block) {
+    return activeChestArenaIds.containsKey(blockKey(block));
+  }
+
+  @EventHandler
+  public void onInventoryClick(InventoryClickEvent event) {
+    scheduleDisappearIfEmpty(event.getInventory());
+  }
+
+  @EventHandler
+  public void onInventoryDrag(InventoryDragEvent event) {
+    scheduleDisappearIfEmpty(event.getInventory());
+  }
+
+  @EventHandler
+  public void onInventoryClose(InventoryCloseEvent event) {
+    scheduleDisappearIfEmpty(event.getInventory());
+  }
+
+  private void scheduleDisappearIfEmpty(Inventory inventory) {
+    Bukkit.getScheduler().runTask(plugin, () -> disappearIfEmpty(inventory));
+  }
+
+  private void disappearIfEmpty(Inventory inventory) {
+    InventoryHolder holder = inventory.getHolder();
+    if (!(holder instanceof Chest chest)) {
+      return;
+    }
+    Block block = chest.getBlock();
+    if (!isActiveChest(block) || !inventoryEmpty(inventory) || !inventory.getViewers().isEmpty()) {
+      return;
+    }
+    activeChestArenaIds.remove(blockKey(block));
+    block.setType(Material.AIR);
+  }
+
+  private boolean inventoryEmpty(Inventory inventory) {
+    for (ItemStack stack : inventory.getContents()) {
+      if (stack != null && !stack.getType().isAir()) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private String blockKey(Block block) {
+    return block.getWorld().getUID() + ":" + block.getX() + ":" + block.getY() + ":"
+        + block.getZ();
+  }
+
+  private Material resolveChestMaterial(Material material) {
+    if (material == null || !material.isBlock()) {
+      return Material.CHEST;
+    }
+    return material;
   }
 
   private long resolveRegenerationPeriod(ChestDefinition definition) {
@@ -256,4 +384,5 @@ public final class ChestController {
       return round;
     }
   }
+
 }

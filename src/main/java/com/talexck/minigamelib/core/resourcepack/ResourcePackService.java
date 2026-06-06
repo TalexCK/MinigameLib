@@ -18,6 +18,8 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 
@@ -25,6 +27,7 @@ public final class ResourcePackService {
 
   private final JavaPlugin plugin;
   private final Map<String, ServedPack> packs = new ConcurrentHashMap<>();
+  private final Map<UUID, Set<String>> sentPackKeys = new ConcurrentHashMap<>();
   private HttpServer server;
 
   public ResourcePackService(JavaPlugin plugin) {
@@ -33,6 +36,12 @@ public final class ResourcePackService {
 
   public void sendResourcePack(Player player, ArenaResourcePackConfig config) {
     if (config == null || !config.enabled()) {
+      return;
+    }
+    String key = keyFor(config);
+    Set<String> playerPacks =
+        sentPackKeys.computeIfAbsent(player.getUniqueId(), ignored -> ConcurrentHashMap.newKeySet());
+    if (!playerPacks.add(key)) {
       return;
     }
     ServedPack pack = preparePack(config);
@@ -46,10 +55,15 @@ public final class ResourcePackService {
       server = null;
     }
     packs.clear();
+    sentPackKeys.clear();
+  }
+
+  public void clearPlayer(UUID playerId) {
+    sentPackKeys.remove(playerId);
   }
 
   private ServedPack preparePack(ArenaResourcePackConfig config) {
-    String key = config.ownerPlugin().getName() + ":" + config.resourcePath();
+    String key = keyFor(config);
     return packs.computeIfAbsent(key, ignored -> {
       try {
         Path file = extractResourcePack(config);
@@ -60,6 +74,10 @@ public final class ResourcePackService {
         throw new IllegalStateException("Failed to prepare resource pack: " + key, exception);
       }
     });
+  }
+
+  private String keyFor(ArenaResourcePackConfig config) {
+    return config.ownerPlugin().getName() + ":" + config.resourcePath();
   }
 
   private Path extractResourcePack(ArenaResourcePackConfig config) throws IOException {
