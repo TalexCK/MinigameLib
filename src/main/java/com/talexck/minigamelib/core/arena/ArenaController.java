@@ -123,7 +123,7 @@ public final class ArenaController implements Listener {
   private final ResourcePackService resourcePackService;
   private final java.util.Set<String> infinitePlacedBlocks = ConcurrentHashMap.newKeySet();
   private final ConcurrentMap<String, ArenaTemplate> templates = new ConcurrentHashMap<>();
-  private final ConcurrentMap<String, RuntimeArena> arenas = new ConcurrentHashMap<>();
+  private final ArenaRegistry registry = new ArenaRegistry();
   private final ConcurrentMap<String, RuntimeBoundary> boundaries = new ConcurrentHashMap<>();
   private final ConcurrentMap<String, List<BlockSnapshot>> spawnCages = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, ActivePotionProjectile> potionProjectiles =
@@ -164,7 +164,7 @@ public final class ArenaController implements Listener {
 
   public CompletableFuture<ArenaHandle> createArena(ArenaCreateRequest request) {
     Objects.requireNonNull(request, "request");
-    if (arenas.containsKey(request.arenaId())) {
+    if (registry.contains(request.arenaId())) {
       return failedFuture(new IllegalStateException("Arena already exists: " + request.arenaId()));
     }
 
@@ -190,7 +190,7 @@ public final class ArenaController implements Listener {
     return worldService.createRuntimeWorld(worldRequest).thenApply(runtimeWorld -> {
       RuntimeArena arena = new RuntimeArena(request.arenaId(), template.templateId(), runtimeWorld,
           layout, settings, resolveTeams(request), listener);
-      RuntimeArena previous = arenas.putIfAbsent(request.arenaId(), arena);
+      RuntimeArena previous = registry.putIfAbsent(arena);
       if (previous != null) {
         throw new IllegalStateException("Arena already exists: " + request.arenaId());
       }
@@ -358,19 +358,19 @@ public final class ArenaController implements Listener {
   }
 
   public Optional<ArenaHandle> findArena(String arenaId) {
-    RuntimeArena arena = arenas.get(arenaId);
+    RuntimeArena arena = registry.get(arenaId);
     return arena == null ? Optional.empty() : Optional.of(arena.handle());
   }
 
   public List<ArenaHandle> arenas() {
-    return arenas.values().stream().map(RuntimeArena::handle).toList();
+    return registry.stream().map(RuntimeArena::handle).toList();
   }
 
   public void shutdown() {
     lobbyTabRefreshTask.cancel();
-    List<String> arenaIds = new ArrayList<>(arenas.keySet());
+    List<String> arenaIds = registry.ids();
     for (String arenaId : arenaIds) {
-      RuntimeArena arena = arenas.remove(arenaId);
+      RuntimeArena arena = registry.remove(arenaId);
       if (arena != null) {
         chestService.stopArenaChests(arenaId, false);
         cancelBoundaryTasks(arena);
@@ -597,7 +597,7 @@ public final class ArenaController implements Listener {
       clearBossBar(arena);
       clearScoreboards(arena);
       arena.setStatus(ArenaStatus.STOPPED);
-      arenas.remove(arena.arenaId(), arena);
+      registry.remove(arena.arenaId(), arena);
       boolean unloaded = worldService.unloadWorld(arena.world().world(), false);
       arena.setStatus(ArenaStatus.DESTROYED);
       arena.listener().onArenaDestroyed(arena.handle());
@@ -1072,10 +1072,7 @@ public final class ArenaController implements Listener {
   }
 
   private boolean isInActiveArena(String playerName) {
-    return arenas.values().stream()
-        .filter(arena -> arena.status() == ArenaStatus.COUNTDOWN
-            || arena.status() == ArenaStatus.RUNNING || arena.status() == ArenaStatus.STOPPING)
-        .anyMatch(arena -> arena.playerNames().contains(playerName));
+    return registry.isInActiveArena(playerName);
   }
 
   private void sendLobbyTabLayout(LayoutManager layoutManager, TabPlayer tabPlayer) {
@@ -1275,7 +1272,7 @@ public final class ArenaController implements Listener {
 
   private void sendAvailableResourcePacks(Player player) {
     List<ArenaSettings> settings = new ArrayList<>();
-    arenas.values().stream().map(RuntimeArena::settings).forEach(settings::add);
+    registry.stream().map(RuntimeArena::settings).forEach(settings::add);
     templates.values().stream().map(ArenaTemplate::defaultSettings).forEach(settings::add);
     for (ArenaSettings setting : settings) {
       if (setting.resourcePack().enabled()) {
@@ -1752,14 +1749,11 @@ public final class ArenaController implements Listener {
   }
 
   private Optional<RuntimeArena> findRunningArenaByPlayer(String playerName) {
-    return arenas.values().stream().filter(arena -> arena.status() == ArenaStatus.RUNNING)
-        .filter(arena -> arena.playerNames().contains(playerName)).findFirst();
+    return registry.findRunningByPlayer(playerName);
   }
 
   private Optional<RuntimeArena> findArenaByPlayer(String playerName) {
-    return arenas.values().stream().filter(
-        arena -> arena.status() == ArenaStatus.COUNTDOWN || arena.status() == ArenaStatus.RUNNING)
-        .filter(arena -> arena.playerNames().contains(playerName)).findFirst();
+    return registry.findByPlayer(playerName);
   }
 
   private Optional<ArenaItemEntry> findItemEntry(RuntimeArena arena, ItemStack stack,
@@ -1895,7 +1889,7 @@ public final class ArenaController implements Listener {
 
       @Override
       public void run() {
-        RuntimeArena currentArena = arenas.get(arena.arenaId());
+        RuntimeArena currentArena = registry.get(arena.arenaId());
         if (currentArena == null || snowball.isDead() || !snowball.isValid()) {
           potionProjectiles.remove(snowball.getUniqueId());
           cancel();
@@ -1974,7 +1968,7 @@ public final class ArenaController implements Listener {
 
       @Override
       public void run() {
-        RuntimeArena arena = arenas.get(arenaId);
+        RuntimeArena arena = registry.get(arenaId);
         if (arena == null || elapsedTicks > durationTicks) {
           cancel();
           return;
@@ -2122,7 +2116,7 @@ public final class ArenaController implements Listener {
     BukkitTask task = new BukkitRunnable() {
       @Override
       public void run() {
-        RuntimeArena current = arenas.get(arena.arenaId());
+        RuntimeArena current = registry.get(arena.arenaId());
         if (current == null || current.status() != ArenaStatus.RUNNING) {
           cancel();
           return;
@@ -2351,7 +2345,7 @@ public final class ArenaController implements Listener {
 
       @Override
       public void run() {
-        RuntimeArena current = arenas.get(arena.arenaId());
+        RuntimeArena current = registry.get(arena.arenaId());
         if (current == null || current.status() != ArenaStatus.RUNNING) {
           cancel();
           return;
@@ -2397,7 +2391,7 @@ public final class ArenaController implements Listener {
 
       @Override
       public void run() {
-        RuntimeArena current = arenas.get(arena.arenaId());
+        RuntimeArena current = registry.get(arena.arenaId());
         if (current == null || current.status() != ArenaStatus.RUNNING) {
           cancel();
           return;
@@ -2499,9 +2493,7 @@ public final class ArenaController implements Listener {
   }
 
   private boolean protectArenaExplosion(World world, List<Block> blocks) {
-    if (world == null || arenas.values().stream().noneMatch(arena -> arena.world().world()
-        .equals(world)
-        && (arena.status() == ArenaStatus.COUNTDOWN || arena.status() == ArenaStatus.RUNNING))) {
+    if (!registry.hasActiveArenaInWorld(world)) {
       return false;
     }
     blocks.removeIf(block -> block.getType() == Material.CHEST
@@ -2538,7 +2530,7 @@ public final class ArenaController implements Listener {
   }
 
   private RuntimeArena requireArena(String arenaId) {
-    RuntimeArena arena = arenas.get(arenaId);
+    RuntimeArena arena = registry.get(arenaId);
     if (arena == null) {
       throw new IllegalArgumentException("Unknown arena: " + arenaId);
     }
