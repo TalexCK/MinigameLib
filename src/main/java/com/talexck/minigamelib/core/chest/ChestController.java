@@ -308,6 +308,10 @@ public final class ChestController implements Listener {
   }
 
   private void scheduleDisappearIfEmpty(Inventory inventory) {
+    // Only arena loot chests are tracked; skip the per-tick task for unrelated inventories.
+    if (!(inventory.getHolder() instanceof Chest chest) || !isActiveChest(chest.getBlock())) {
+      return;
+    }
     Bukkit.getScheduler().runTask(plugin, () -> disappearIfEmpty(inventory));
   }
 
