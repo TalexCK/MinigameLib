@@ -5,13 +5,10 @@ import com.talexck.minigamelib.api.arena.ArenaBossBarConfig;
 import com.talexck.minigamelib.api.arena.ArenaCreateRequest;
 import com.talexck.minigamelib.api.arena.ArenaGameResult;
 import com.talexck.minigamelib.api.arena.ArenaHandle;
-import com.talexck.minigamelib.api.arena.ArenaItemEntry;
-import com.talexck.minigamelib.api.arena.ArenaItemMode;
 import com.talexck.minigamelib.api.arena.ArenaLayout;
 import com.talexck.minigamelib.api.arena.ArenaLifecycleListener;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaPlayerStats;
-import com.talexck.minigamelib.api.arena.ArenaPotionItemConfig;
 import com.talexck.minigamelib.api.arena.ArenaScoreboardConfig;
 import com.talexck.minigamelib.api.arena.ArenaSettings;
 import com.talexck.minigamelib.api.arena.ArenaSound;
@@ -29,45 +26,20 @@ import com.talexck.minigamelib.core.resourcepack.ResourcePackService;
 import com.talexck.minigamelib.core.world.DefaultWorldService;
 import com.talexck.minigamelib.core.world.WorldCreateRequest;
 import org.bukkit.Bukkit;
-import org.bukkit.Color;
 import org.bukkit.GameMode;
 import org.bukkit.GameRules;
 import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.NamespacedKey;
-import org.bukkit.Particle;
 import org.bukkit.Sound;
 import org.bukkit.World;
-import org.bukkit.block.Block;
 import org.bukkit.boss.BossBar;
-import org.bukkit.entity.Creeper;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Projectile;
-import org.bukkit.entity.Snowball;
-import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.Action;
-import org.bukkit.event.block.BlockBreakEvent;
-import org.bukkit.event.block.BlockPlaceEvent;
-import org.bukkit.event.entity.EntityDamageByEntityEvent;
-import org.bukkit.event.entity.PlayerDeathEvent;
-import org.bukkit.event.entity.EntityPlaceEvent;
-import org.bukkit.event.entity.CreatureSpawnEvent;
-import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.player.PlayerAdvancementDoneEvent;
-import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.event.player.PlayerSwapHandItemsEvent;
-import org.bukkit.inventory.EquipmentSlot;
-import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
-import org.bukkit.inventory.meta.LeatherArmorMeta;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.potion.PotionEffect;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.scoreboard.Criteria;
@@ -85,7 +57,6 @@ import me.neznamy.tab.api.tablist.layout.LayoutManager;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.title.Title;
 
 import java.util.ArrayList;
@@ -93,12 +64,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-public final class ArenaController implements Listener {
+public final class ArenaController implements Listener, ArenaLifecycleControl, ArenaDisplay {
 
   private static final long POST_GAME_RETURN_DELAY_TICKS = 20L * 15L;
   private static final int TAB_LAYOUT_SIZE = 80;
@@ -108,18 +78,14 @@ public final class ArenaController implements Listener {
   private final DefaultWorldService worldService;
   private final DefaultChestService chestService;
   private final ResourcePackService resourcePackService;
-  private final java.util.Set<String> infinitePlacedBlocks = ConcurrentHashMap.newKeySet();
   private final ConcurrentMap<String, ArenaTemplate> templates = new ConcurrentHashMap<>();
   private final ArenaRegistry registry = new ArenaRegistry();
   private final SpawnCageService spawnCageService = new SpawnCageService();
   private final LootService lootService;
   private final BoundaryService boundaryService;
-  private final ConcurrentMap<UUID, ActivePotionProjectile> potionProjectiles =
-      new ConcurrentHashMap<>();
-  private final ConcurrentMap<UUID, DeathCredit> deathCredits = new ConcurrentHashMap<>();
-  private final ConcurrentMap<UUID, String> creeperOwners = new ConcurrentHashMap<>();
-  private final ConcurrentMap<UUID, RecentCreeperPlacement> recentCreeperPlacements =
-      new ConcurrentHashMap<>();
+  private final ItemService itemService;
+  private final CombatService combatService;
+  private final ItemCombatService itemCombatService;
   private final java.util.Set<String> warnedTabFeatures = ConcurrentHashMap.newKeySet();
   private final BukkitTask lobbyTabRefreshTask;
 
@@ -130,6 +96,9 @@ public final class ArenaController implements Listener {
     this.resourcePackService = new ResourcePackService(plugin);
     this.lootService = new LootService(chestService);
     this.boundaryService = new BoundaryService(plugin, registry, chestService);
+    this.itemService = new ItemService(plugin, registry);
+    this.combatService = new CombatService(plugin, registry, this::refreshScoreboards, this);
+    this.itemCombatService = new ItemCombatService(plugin, registry, itemService, combatService);
     Bukkit.getPluginManager().registerEvents(this, plugin);
     this.lobbyTabRefreshTask = Bukkit.getScheduler().runTaskTimer(plugin,
         this::resetLobbyTabViews, 40L, 40L);
@@ -211,7 +180,7 @@ public final class ArenaController implements Listener {
             arena.settings().countdownSeconds(), null);
         playConfiguredSound(arena, arena.settings().sounds().teleport());
         teleportPlayersToSpawn(arena);
-        giveBeginningItems(arena);
+        itemService.giveBeginningItems(arena);
         startCountdown(arena, future);
       } catch (RuntimeException exception) {
         future.completeExceptionally(exception);
@@ -239,7 +208,7 @@ public final class ArenaController implements Listener {
         sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0, reason);
         playConfiguredSound(arena, arena.settings().sounds().gameStopped());
         setArenaPlayersGameMode(arena, GameMode.SPECTATOR);
-        clearArenaPlayerInventories(arena);
+        itemService.clearArenaPlayerInventories(arena);
         spawnCageService.clear(arena.arenaId());
         chestService.stopArenaChests(arenaId, false);
         boundaryService.cancelTasks(arena);
@@ -261,6 +230,16 @@ public final class ArenaController implements Listener {
 
   public CompletableFuture<Void> destroyArena(String arenaId) {
     return stopArena(arenaId, ArenaStopReason.FORCE);
+  }
+
+  @Override
+  public CompletableFuture<Void> stop(String arenaId, ArenaStopReason reason) {
+    return stopArena(arenaId, reason);
+  }
+
+  @Override
+  public void refreshScoreboards(RuntimeArena arena, int secondsLeft) {
+    applyScoreboards(arena, secondsLeft);
   }
 
   public CompletableFuture<Void> broadcastMessage(String arenaId, String message) {
@@ -373,6 +352,9 @@ public final class ArenaController implements Listener {
     }
     HandlerList.unregisterAll(this);
     boundaryService.shutdown();
+    itemService.shutdown();
+    itemCombatService.shutdown();
+    combatService.shutdown();
     resourcePackService.shutdown();
   }
 
@@ -412,94 +394,6 @@ public final class ArenaController implements Listener {
       adjusted.add(0.0, 1.0, 0.0);
     }
     return adjusted;
-  }
-
-  private void giveBeginningItems(RuntimeArena arena) {
-    if (arena.settings().beginningItems().isEmpty()) {
-      return;
-    }
-    for (String playerName : arena.playerNames()) {
-      Player player = Bukkit.getPlayerExact(playerName);
-      if (player == null) {
-        continue;
-      }
-      player.getInventory().clear();
-      for (ArenaItemEntry entry : arena.settings().beginningItems()) {
-        ItemStack stack = createArenaItemStack(arena, playerName, entry);
-        if (entry.mode() == ArenaItemMode.INFINITE_OFFHAND) {
-          player.getInventory().setItemInOffHand(stack);
-          continue;
-        }
-        if (equipArmor(player, stack)) {
-          continue;
-        }
-        player.getInventory().addItem(stack);
-      }
-    }
-  }
-
-  private ItemStack createArenaItemStack(RuntimeArena arena, String playerName,
-      ArenaItemEntry entry) {
-    ItemStack stack = entry.createStack();
-    if (entry.mode() == ArenaItemMode.INFINITE) {
-      Material material =
-          arena.teamOf(playerName).map(this::concreteMaterial).orElse(Material.WHITE_CONCRETE);
-      stack = new ItemStack(material, 64);
-      applyItemName(stack, entry.name());
-    } else if (entry.mode() == ArenaItemMode.INFINITE_OFFHAND) {
-      Material material =
-          arena.teamOf(playerName).map(this::concreteMaterial).orElse(Material.WHITE_CONCRETE);
-      stack = new ItemStack(material, 64);
-      applyItemName(stack, entry.name());
-    } else if (entry.mode() == ArenaItemMode.TEAM_LEATHER_ARMOR) {
-      Optional<ArenaTeamColor> teamColor = arena.teamOf(playerName);
-      if (teamColor.isPresent()) {
-        applyLeatherColor(stack, teamColor.get());
-      }
-    }
-    return stack;
-  }
-
-  private boolean equipArmor(Player player, ItemStack stack) {
-    return switch (stack.getType()) {
-      case LEATHER_HELMET, CHAINMAIL_HELMET, IRON_HELMET, GOLDEN_HELMET, DIAMOND_HELMET, NETHERITE_HELMET, TURTLE_HELMET -> {
-        player.getInventory().setHelmet(stack);
-        yield true;
-      }
-      case LEATHER_CHESTPLATE, CHAINMAIL_CHESTPLATE, IRON_CHESTPLATE, GOLDEN_CHESTPLATE, DIAMOND_CHESTPLATE, NETHERITE_CHESTPLATE -> {
-        player.getInventory().setChestplate(stack);
-        yield true;
-      }
-      case LEATHER_LEGGINGS, CHAINMAIL_LEGGINGS, IRON_LEGGINGS, GOLDEN_LEGGINGS, DIAMOND_LEGGINGS, NETHERITE_LEGGINGS -> {
-        player.getInventory().setLeggings(stack);
-        yield true;
-      }
-      case LEATHER_BOOTS, CHAINMAIL_BOOTS, IRON_BOOTS, GOLDEN_BOOTS, DIAMOND_BOOTS, NETHERITE_BOOTS -> {
-        player.getInventory().setBoots(stack);
-        yield true;
-      }
-      default -> false;
-    };
-  }
-
-  private void applyLeatherColor(ItemStack stack, ArenaTeamColor color) {
-    ItemMeta meta = stack.getItemMeta();
-    if (!(meta instanceof LeatherArmorMeta leatherMeta)) {
-      return;
-    }
-    leatherMeta.setColor(leatherColor(color));
-    stack.setItemMeta(leatherMeta);
-  }
-
-  private void applyItemName(ItemStack stack, String name) {
-    if (name == null || name.isBlank()) {
-      return;
-    }
-    ItemMeta meta = stack.getItemMeta();
-    if (meta != null) {
-      meta.displayName(Component.text(name));
-      stack.setItemMeta(meta);
-    }
   }
 
   private void teleportPlayersBack(RuntimeArena arena) {
@@ -605,7 +499,7 @@ public final class ArenaController implements Listener {
     arena.markGameStarted(System.currentTimeMillis());
     spawnCageService.clear(arena.arenaId());
     setArenaPlayersGameMode(arena, GameMode.SURVIVAL);
-    startInfiniteBlockMaintenance(arena);
+    itemService.startInfiniteBlockMaintenance(arena);
     boundaryService.startLifecycle(arena);
     boundaryService.scheduleStages(arena);
     applyScoreboards(arena, 0);
@@ -1286,223 +1180,8 @@ public final class ArenaController implements Listener {
   }
 
   @EventHandler
-  public void onPlayerDeath(PlayerDeathEvent event) {
-    Player player = event.getEntity();
-    RuntimeArena arena = findRunningArenaByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
-      return;
-    }
-    event.setShowDeathMessages(false);
-    event.deathMessage(null);
-
-    Player directKiller = player.getKiller();
-    String creditedKillerName = null;
-    String messageKillerName = null;
-    if (directKiller != null && arena.playerNames().contains(directKiller.getName())) {
-      messageKillerName = directKiller.getName();
-      if (isCreditableKill(arena, player.getName(), directKiller.getName())) {
-        creditedKillerName = directKiller.getName();
-        arena.recordKill(creditedKillerName);
-        arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
-      }
-    }
-    DeathCredit credit = validDeathCredit(player).orElse(null);
-    if (messageKillerName == null && credit != null && credit.killerName() != null
-        && arena.playerNames().contains(credit.killerName())) {
-      messageKillerName = credit.killerName();
-      if (isCreditableKill(arena, player.getName(), credit.killerName())) {
-        creditedKillerName = credit.killerName();
-        arena.recordKill(creditedKillerName);
-        arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
-      }
-    }
-    broadcastDeathMessage(arena, player.getName(), messageKillerName, credit);
-    failPlayer(arena, player, creditedKillerName);
-  }
-
-  @EventHandler
-  public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
-    if (!(event.getEntity() instanceof Player victim)) {
-      return;
-    }
-    RuntimeArena arena = findArenaByPlayer(victim.getName()).orElse(null);
-    if (arena == null) {
-      return;
-    }
-    if (event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_EXPLOSION
-        || event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.BLOCK_EXPLOSION
-        || event.getDamager() instanceof TNTPrimed || event.getDamager() instanceof Creeper) {
-      recordDamageCredit(arena, victim, event.getDamager());
-      return;
-    }
-    Player attacker = attackingPlayer(event.getDamager());
-    if (attacker == null || attacker.equals(victim)) {
-      return;
-    }
-    Optional<ArenaTeamColor> attackerTeam = arena.teamOf(attacker.getName());
-    Optional<ArenaTeamColor> victimTeam = arena.teamOf(victim.getName());
-    if (attackerTeam.isPresent() && attackerTeam.equals(victimTeam)) {
-      event.setCancelled(true);
-      deathCredits.remove(victim.getUniqueId());
-      return;
-    }
-    recordDamageCredit(arena, victim, event.getDamager());
-  }
-
-  private boolean isCreditableKill(RuntimeArena arena, String victimName, String killerName) {
-    if (killerName == null || victimName == null || victimName.equals(killerName)
-        || !arena.playerNames().contains(killerName)) {
-      return false;
-    }
-    Optional<ArenaTeamColor> victimTeam = arena.teamOf(victimName);
-    Optional<ArenaTeamColor> killerTeam = arena.teamOf(killerName);
-    return victimTeam.isEmpty() || killerTeam.isEmpty() || !victimTeam.equals(killerTeam);
-  }
-
-  @EventHandler
-  public void onEntityPlace(EntityPlaceEvent event) {
-    if (!(event.getEntity() instanceof Creeper) || event.getPlayer() == null) {
-      return;
-    }
-    RuntimeArena arena = findArenaByPlayer(event.getPlayer().getName()).orElse(null);
-    if (arena != null) {
-      creeperOwners.put(event.getEntity().getUniqueId(), event.getPlayer().getName());
-    }
-  }
-
-  @EventHandler
-  public void onCreatureSpawn(CreatureSpawnEvent event) {
-    if (!(event.getEntity() instanceof Creeper creeper)
-        || event.getSpawnReason() != CreatureSpawnEvent.SpawnReason.SPAWNER_EGG) {
-      return;
-    }
-    findRecentCreeperOwner(event.getLocation()).ifPresent(owner -> {
-      if (findArenaByPlayer(owner).isPresent()) {
-        creeperOwners.put(creeper.getUniqueId(), owner);
-      }
-    });
-  }
-
-  @EventHandler
   public void onAdvancementDone(PlayerAdvancementDoneEvent event) {
     event.message(null);
-  }
-
-  private void recordDamageCredit(RuntimeArena arena, Player victim, Entity damager) {
-    if (damager instanceof TNTPrimed tnt) {
-      String killerName = tnt.getSource() instanceof Player player ? player.getName() : null;
-      deathCredits.put(victim.getUniqueId(), new DeathCredit(killerName, DeathSource.TNT, "TNT",
-          System.currentTimeMillis() + 10_000L));
-      return;
-    }
-    if (damager instanceof Creeper creeper) {
-      String killerName = creeperOwners.get(creeper.getUniqueId());
-      deathCredits.put(victim.getUniqueId(), new DeathCredit(killerName, DeathSource.CREEPER, "苦力怕",
-          System.currentTimeMillis() + 10_000L));
-      return;
-    }
-    Player attacker = attackingPlayer(damager);
-    if (attacker != null && arena.playerNames().contains(attacker.getName())) {
-      deathCredits.put(victim.getUniqueId(), new DeathCredit(attacker.getName(), DeathSource.PLAYER,
-          "", System.currentTimeMillis() + 10_000L));
-    }
-  }
-
-  private Optional<DeathCredit> validDeathCredit(Player player) {
-    DeathCredit credit = deathCredits.remove(player.getUniqueId());
-    if (credit == null || credit.expiresAtMillis() < System.currentTimeMillis()) {
-      return Optional.empty();
-    }
-    return Optional.of(credit);
-  }
-
-  private void broadcastDeathMessage(RuntimeArena arena, String victimName, String killerName,
-      DeathCredit credit) {
-    String template = deathTemplate(arena, killerName, credit);
-    for (String playerName : arena.playerNames()) {
-      Player viewer = Bukkit.getPlayerExact(playerName);
-      if (viewer != null) {
-        viewer.sendMessage(renderDeathComponent(arena, template, victimName, killerName, credit));
-      }
-    }
-  }
-
-  private String deathTemplate(RuntimeArena arena, String killerName, DeathCredit credit) {
-    if (credit == null) {
-      return killerName == null ? arena.settings().messages().deathGeneric()
-          : arena.settings().messages().deathByPlayer();
-    }
-    return switch (credit.source()) {
-      case TNT -> arena.settings().messages().deathByTnt();
-      case CREEPER -> arena.settings().messages().deathByCreeper();
-      case POTION -> arena.settings().messages().deathByPotion();
-      case PLAYER -> arena.settings().messages().deathByPlayer();
-    };
-  }
-
-  private Component renderDeathComponent(RuntimeArena arena, String template, String victimName,
-      String killerName, DeathCredit credit) {
-    Component result = Component.empty();
-    int index = 0;
-    while (index < template.length()) {
-      if (template.startsWith("{victim}", index)) {
-        result = result.append(coloredPlayerName(arena, victimName));
-        index += "{victim}".length();
-      } else if (template.startsWith("{killer}", index)) {
-        String renderedKiller =
-            killerName == null && credit != null ? credit.killerName() : killerName;
-        result = result.append(renderedKiller == null ? Component.text("未知来源")
-            : coloredPlayerName(arena, renderedKiller));
-        index += "{killer}".length();
-      } else if (template.startsWith("{source}", index)) {
-        result = result
-            .append(Component.text(credit == null ? "" : credit.sourceName(), NamedTextColor.GOLD));
-        index += "{source}".length();
-      } else {
-        int next = nextDeathPlaceholderIndex(template, index);
-        result = result.append(coloredComponent(template.substring(index, next)));
-        index = next;
-      }
-    }
-    return result;
-  }
-
-  private int nextDeathPlaceholderIndex(String template, int start) {
-    int next = template.length();
-    for (String placeholder : List.of("{victim}", "{killer}", "{source}")) {
-      int index = template.indexOf(placeholder, start);
-      if (index >= 0) {
-        next = Math.min(next, index);
-      }
-    }
-    return next;
-  }
-
-  private Component coloredPlayerName(RuntimeArena arena, String playerName) {
-    NamedTextColor color =
-        arena.teamOf(playerName).map(this::tabColor).orElse(NamedTextColor.WHITE);
-    return Component.text(playerName, color);
-  }
-
-  private void failPlayer(RuntimeArena arena, Player player, String killerName) {
-    ArenaTeamColor teamColor = arena.teamOf(player.getName()).orElse(null);
-    boolean wasFailed = arena.isFailed(player.getName());
-    boolean teamWasFailed = teamColor != null && arena.isTeamFailed(teamColor);
-    arena.recordDeath(player.getName());
-    if (killerName != null) {
-      arena.listener().onPlayerKilled(arena.handle(), player.getName(), killerName);
-    }
-    if (!wasFailed && arena.isFailed(player.getName())) {
-      arena.listener().onPlayerFailed(arena.handle(), player.getName(), teamColor);
-    }
-    if (teamColor != null && !teamWasFailed && arena.isTeamFailed(teamColor)) {
-      List<String> failedTeamPlayers =
-          arena.teams().stream().filter(team -> team.color() == teamColor).findFirst()
-              .map(ArenaTeam::playerNames).orElse(List.of());
-      arena.listener().onTeamFailed(arena.handle(), teamColor, failedTeamPlayers);
-    }
-    applyScoreboards(arena, 0);
-    checkVictory(arena);
   }
 
   @EventHandler
@@ -1520,506 +1199,13 @@ public final class ArenaController implements Listener {
     Bukkit.getScheduler().runTask(plugin, this::resetLobbyTabViews);
   }
 
-  @EventHandler
-  public void onBlockPlace(BlockPlaceEvent event) {
-    Player player = event.getPlayer();
-    RuntimeArena arena = findArenaByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
-      return;
-    }
-    ItemStack hand = event.getItemInHand();
-    if (hand.getType() == Material.TNT && findIgniteTntItem(arena, hand).isPresent()) {
-      ignitePlacedTnt(event.getBlockPlaced(), player);
-    }
-    Optional<ArenaItemEntry> infiniteEntry = findInfiniteBlockItem(arena, hand);
-    if (infiniteEntry.isPresent()) {
-      if (infiniteEntry.get().mode() == ArenaItemMode.INFINITE_OFFHAND
-          && event.getHand() == EquipmentSlot.HAND) {
-        event.setCancelled(true);
-        clearMainHandInfiniteOffhandBlock(arena, player, infiniteEntry.get());
-        ensureOffhandInfiniteBlock(arena, player, infiniteEntry.get());
-        return;
-      }
-      infinitePlacedBlocks.add(blockKey(event.getBlockPlaced()));
-      Bukkit.getScheduler().runTask(plugin,
-          () -> refillInfiniteItem(arena, player, infiniteEntry.get(), event.getHand()));
-    }
-  }
-
-  @EventHandler
-  public void onPlayerSwapHandItems(PlayerSwapHandItemsEvent event) {
-    Player player = event.getPlayer();
-    RuntimeArena arena = findArenaByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
-      return;
-    }
-    ArenaItemEntry offhandEntry = arena.settings().beginningItems().stream()
-        .filter(entry -> entry.mode() == ArenaItemMode.INFINITE_OFFHAND).findFirst().orElse(null);
-    if (offhandEntry == null) {
-      return;
-    }
-    boolean movingInfiniteBlock =
-        findItemEntry(arena, event.getOffHandItem(), ArenaItemMode.INFINITE_OFFHAND).isPresent()
-            || findItemEntry(arena, event.getMainHandItem(), ArenaItemMode.INFINITE_OFFHAND)
-                .isPresent();
-    if (!movingInfiniteBlock) {
-      return;
-    }
-    event.setCancelled(true);
-    clearMainHandInfiniteOffhandBlock(arena, player, offhandEntry);
-    ensureOffhandInfiniteBlock(arena, player, offhandEntry);
-  }
-
-  @EventHandler
-  public void onBlockBreak(BlockBreakEvent event) {
-    RuntimeArena arena = findArenaByPlayer(event.getPlayer().getName()).orElse(null);
-    if (arena != null) {
-      event.setDropItems(false);
-      event.setExpToDrop(0);
-    }
-    String key = blockKey(event.getBlock());
-    if (infinitePlacedBlocks.remove(key)) {
-      event.setDropItems(false);
-    }
-  }
-
-  @EventHandler
-  public void onPlayerInteract(PlayerInteractEvent event) {
-    if (event.getAction() != Action.RIGHT_CLICK_AIR
-        && event.getAction() != Action.RIGHT_CLICK_BLOCK) {
-      return;
-    }
-    Player player = event.getPlayer();
-    RuntimeArena arena = findArenaByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
-      return;
-    }
-    ItemStack item = event.getItem();
-    if (item != null && item.getType() == Material.CREEPER_SPAWN_EGG) {
-      rememberCreeperPlacement(player, event);
-    }
-    ArenaItemEntry selfPotion = findItemEntry(arena, item, ArenaItemMode.SELF_POTION).orElse(null);
-    if (selfPotion != null) {
-      event.setCancelled(true);
-      applySelfPotion(player, selfPotion);
-      consumeOne(item);
-      return;
-    }
-
-    ArenaItemEntry entry = findItemEntry(arena, item, ArenaItemMode.POTION).orElse(null);
-    if (entry == null) {
-      return;
-    }
-    event.setCancelled(true);
-    launchPotionFireball(arena, player, entry);
-    consumeOne(item);
-  }
-
-  private void rememberCreeperPlacement(Player player, PlayerInteractEvent event) {
-    Location location = event.getClickedBlock() == null ? player.getLocation()
-        : event.getClickedBlock().getLocation().add(0.5, 1.0, 0.5);
-    recentCreeperPlacements.put(player.getUniqueId(),
-        new RecentCreeperPlacement(player.getName(), location, System.currentTimeMillis()));
-  }
-
-  private Optional<String> findRecentCreeperOwner(Location spawnLocation) {
-    long now = System.currentTimeMillis();
-    recentCreeperPlacements.entrySet().removeIf(entry -> now - entry.getValue().createdAtMillis()
-        > 3_000L);
-    return recentCreeperPlacements.values().stream()
-        .filter(placement -> placement.location().getWorld() != null
-            && placement.location().getWorld().equals(spawnLocation.getWorld()))
-        .filter(placement -> placement.location().distanceSquared(spawnLocation) <= 16.0)
-        .min(java.util.Comparator.comparingDouble(
-            placement -> placement.location().distanceSquared(spawnLocation)))
-        .map(RecentCreeperPlacement::playerName);
-  }
-
-  private void checkVictory(RuntimeArena arena) {
-    if (arena.settings().victoryCondition() == null) {
-      return;
-    }
-    if (arena.aliveTeamCount() == 0) {
-      stopArena(arena.arenaId(), ArenaStopReason.NORMAL);
-      return;
-    }
-    arena.singleAliveTeam().ifPresent(winner -> {
-      arena.setWinningTeam(winner);
-      stopArena(arena.arenaId(), ArenaStopReason.NORMAL);
-    });
-  }
-
-  private Optional<RuntimeArena> findRunningArenaByPlayer(String playerName) {
-    return registry.findRunningByPlayer(playerName);
-  }
-
-  private Optional<RuntimeArena> findArenaByPlayer(String playerName) {
-    return registry.findByPlayer(playerName);
-  }
-
-  private Optional<ArenaItemEntry> findItemEntry(RuntimeArena arena, ItemStack stack,
-      ArenaItemMode mode) {
-    if (stack == null || stack.getType().isAir()) {
-      return Optional.empty();
-    }
-    return allConfiguredItems(arena).stream().filter(entry -> entry.mode() == mode)
-        .filter(entry -> matchesArenaItem(arena, stack, entry)).findFirst();
-  }
-
-  private List<ArenaItemEntry> allConfiguredItems(RuntimeArena arena) {
-    List<ArenaItemEntry> items = new ArrayList<>(arena.settings().beginningItems());
-    arena.settings().lootChests().stream().flatMap(chest -> chest.lootTable().stream())
-        .flatMap(entry -> entry.items().stream()).forEach(items::add);
-    return items;
-  }
-
-  private Optional<ArenaItemEntry> findIgniteTntItem(RuntimeArena arena, ItemStack stack) {
-    if (stack == null || stack.getType() != Material.TNT) {
-      return Optional.empty();
-    }
-    return allConfiguredItems(arena).stream().filter(ArenaItemEntry::igniteTntOnPlace)
-        .filter(entry -> entry.item().getType() == Material.TNT)
-        .filter(entry -> matchesArenaItem(arena, stack, entry)).findFirst();
-  }
-
-  private void ignitePlacedTnt(Block block, Player source) {
-    Location location = block.getLocation().add(0.5, 0.0, 0.5);
-    block.setType(Material.AIR);
-    block.getWorld().spawn(location, TNTPrimed.class, tnt -> tnt.setSource(source));
-  }
-
-  private boolean matchesArenaItem(RuntimeArena arena, ItemStack stack, ArenaItemEntry entry) {
-    if (entry.mode() == ArenaItemMode.INFINITE || entry.mode() == ArenaItemMode.INFINITE_OFFHAND) {
-      return isConcrete(stack.getType());
-    }
-    if (stack.getType() != entry.item().getType()) {
-      return false;
-    }
-    if (entry.mode() == ArenaItemMode.POTION || entry.mode() == ArenaItemMode.SELF_POTION
-        || entry.mode() == ArenaItemMode.TEAM_LEATHER_ARMOR) {
-      return itemDisplayName(stack).equals(entry.name());
-    }
-    return true;
-  }
-
-  private String itemDisplayName(ItemStack stack) {
-    ItemMeta meta = stack.getItemMeta();
-    if (meta == null || !meta.hasDisplayName() || meta.displayName() == null) {
-      return "";
-    }
-    return PlainTextComponentSerializer.plainText().serialize(meta.displayName());
-  }
-
-  private void refillInfiniteItem(RuntimeArena arena, Player player) {
-    ArenaItemEntry entry = arena.settings().beginningItems().stream()
-        .filter(item -> item.mode() == ArenaItemMode.INFINITE
-            || item.mode() == ArenaItemMode.INFINITE_OFFHAND)
-        .findFirst().orElse(null);
-    if (entry == null) {
-      return;
-    }
-    Material material =
-        arena.teamOf(player.getName()).map(this::concreteMaterial).orElse(Material.WHITE_CONCRETE);
-    if (entry.mode() == ArenaItemMode.INFINITE_OFFHAND) {
-      player.getInventory().setItemInOffHand(createArenaItemStack(arena, player.getName(), entry));
-      return;
-    }
-    for (ItemStack stack : player.getInventory().getContents()) {
-      if (stack != null && stack.getType() == material) {
-        stack.setAmount(64);
-        return;
-      }
-    }
-    player.getInventory().addItem(createArenaItemStack(arena, player.getName(), entry));
-  }
-
-  private Optional<ArenaItemEntry> findInfiniteBlockItem(RuntimeArena arena, ItemStack stack) {
-    Optional<ArenaItemEntry> mainHandEntry = findItemEntry(arena, stack, ArenaItemMode.INFINITE);
-    if (mainHandEntry.isPresent()) {
-      return mainHandEntry;
-    }
-    return findItemEntry(arena, stack, ArenaItemMode.INFINITE_OFFHAND);
-  }
-
-  private void refillInfiniteItem(RuntimeArena arena, Player player, ArenaItemEntry entry,
-      EquipmentSlot hand) {
-    ItemStack refill = createArenaItemStack(arena, player.getName(), entry);
-    if (entry.mode() == ArenaItemMode.INFINITE_OFFHAND || hand == EquipmentSlot.OFF_HAND) {
-      Bukkit.getScheduler().runTaskLater(plugin, () -> {
-        clearMainHandInfiniteOffhandBlock(arena, player, entry);
-        player.getInventory().setItemInOffHand(refill);
-      }, 1L);
-      return;
-    }
-    if (hand == EquipmentSlot.HAND) {
-      Bukkit.getScheduler().runTaskLater(plugin,
-          () -> player.getInventory().setItemInMainHand(refill), 1L);
-      return;
-    }
-    refillInfiniteItem(arena, player);
-  }
-
-  private void ensureOffhandInfiniteBlock(RuntimeArena arena, Player player, ArenaItemEntry entry) {
-    Bukkit.getScheduler().runTask(plugin, () -> player.getInventory()
-        .setItemInOffHand(createArenaItemStack(arena, player.getName(), entry)));
-  }
-
-  private void clearMainHandInfiniteOffhandBlock(RuntimeArena arena, Player player,
-      ArenaItemEntry entry) {
-    if (entry.mode() != ArenaItemMode.INFINITE_OFFHAND) {
-      return;
-    }
-    ItemStack mainHand = player.getInventory().getItemInMainHand();
-    if (findItemEntry(arena, mainHand, ArenaItemMode.INFINITE_OFFHAND).isPresent()) {
-      player.getInventory().setItemInMainHand(new ItemStack(Material.AIR));
-    }
-  }
-
-  private void launchPotionFireball(RuntimeArena arena, Player player, ArenaItemEntry entry) {
-    ArenaPotionItemConfig config = entry.potionConfig();
-    ItemStack displayStack = projectileDisplayStack(entry);
-    Snowball snowball = player.launchProjectile(Snowball.class);
-    snowball.setItem(displayStack);
-    snowball.setVelocity(player.getLocation().getDirection().normalize().multiply(1.25));
-    snowball.setGravity(entry.item().getType() == Material.SNOWBALL);
-    snowball.setPersistent(false);
-    potionProjectiles.put(snowball.getUniqueId(),
-        new ActivePotionProjectile(arena.arenaId(), config, player.getName(), entry.name()));
-    new BukkitRunnable() {
-      private int ticks;
-
-      @Override
-      public void run() {
-        RuntimeArena currentArena = registry.get(arena.arenaId());
-        if (currentArena == null || snowball.isDead() || !snowball.isValid()) {
-          potionProjectiles.remove(snowball.getUniqueId());
-          cancel();
-          return;
-        }
-        if (ticks >= 80) {
-          explodePotionProjectile(snowball);
-          cancel();
-          return;
-        }
-        spawnPotionParticle(snowball.getLocation(), config, 2, 0.08, 0.08, 0.08);
-        ticks++;
-      }
-    }.runTaskTimer(plugin, 0L, 1L);
-  }
-
   @SuppressWarnings("deprecation")
-  private ItemStack projectileDisplayStack(ArenaItemEntry entry) {
-    ItemStack stack = entry.createStack();
-    stack.setAmount(1);
-    ArenaPotionItemConfig config = entry.potionConfig();
-    if (config.projectileCustomModelData() > 0 || !config.itemModelKey().isBlank()) {
-      ItemMeta meta = stack.getItemMeta();
-      if (meta != null) {
-        if (config.projectileCustomModelData() > 0) {
-          meta.setCustomModelData(config.projectileCustomModelData());
-        }
-        applyItemModel(meta, config);
-        stack.setItemMeta(meta);
-      }
-    }
-    return stack;
-  }
-
-  private void applyItemModel(ItemMeta meta, ArenaPotionItemConfig config) {
-    if (config == null || config.itemModelKey().isBlank()) {
-      return;
-    }
-    NamespacedKey key = NamespacedKey.fromString(config.itemModelKey());
-    if (key != null) {
-      meta.setItemModel(key);
-    }
-  }
-
-  @EventHandler
-  public void onProjectileHit(ProjectileHitEvent event) {
-    if (event.getEntity() instanceof Snowball snowball
-        && potionProjectiles.containsKey(snowball.getUniqueId())) {
-      explodePotionProjectile(snowball);
-    }
-  }
-
-  private void explodePotionProjectile(Snowball snowball) {
-    ActivePotionProjectile projectile = potionProjectiles.remove(snowball.getUniqueId());
-    if (projectile == null) {
-      return;
-    }
-    Location location = snowball.getLocation();
-    snowball.remove();
-    startPotionSphere(projectile.arenaId(), location, projectile.config(), projectile.shooterName(),
-        projectile.itemName());
-  }
-
-  private void applySelfPotion(Player player, ArenaItemEntry entry) {
-    ArenaPotionItemConfig config = entry.potionConfig();
-    player.addPotionEffect(new PotionEffect(config.effectType(),
-        Math.max(1, (int) toTicks(config.effectDuration())), config.amplifier(), true, true, true));
-  }
-
-  private void startPotionSphere(String arenaId, Location center, ArenaPotionItemConfig config,
-      String shooterName, String itemName) {
-    long durationTicks = toTicks(config.duration());
-    long effectTicks = Math.max(1L, toTicks(config.effectDuration()));
-    new BukkitRunnable() {
-      private long elapsedTicks;
-
-      @Override
-      public void run() {
-        RuntimeArena arena = registry.get(arenaId);
-        if (arena == null || elapsedTicks > durationTicks) {
-          cancel();
-          return;
-        }
-        spawnPotionSphereParticles(center, config);
-        double radiusSquared = config.radius() * config.radius();
-        for (String playerName : arena.playerNames()) {
-          Player player = Bukkit.getPlayerExact(playerName);
-          if (player != null && player.getWorld().equals(center.getWorld())
-              && player.getLocation().distanceSquared(center) <= radiusSquared) {
-            if (isOffensiveEffect(config.effectType())) {
-              deathCredits.put(player.getUniqueId(),
-                  new DeathCredit(shooterName, DeathSource.POTION,
-                      itemName == null || itemName.isBlank() ? "药水球" : itemName,
-                      System.currentTimeMillis() + 12_000L));
-            }
-            player.addPotionEffect(new PotionEffect(config.effectType(), (int) effectTicks,
-                config.amplifier(), true, true, true));
-          }
-        }
-        elapsedTicks += 20L;
-      }
-    }.runTaskTimer(plugin, 0L, 20L);
-  }
-
-  private void spawnPotionSphereParticles(Location center, ArenaPotionItemConfig config) {
-    double radius = config.radius();
-    for (int index = 0; index < 42; index++) {
-      double theta = 2.399963229728653 * index;
-      double y = 1.0 - (2.0 * index / 41.0);
-      double circleRadius = Math.sqrt(Math.max(0.0, 1.0 - y * y));
-      Location point = center.clone().add(Math.cos(theta) * circleRadius * radius,
-          y * radius * 0.75, Math.sin(theta) * circleRadius * radius);
-      spawnPotionParticle(point, config, 1, 0.02, 0.02, 0.02);
-    }
-  }
-
-  private void spawnPotionParticle(Location location, ArenaPotionItemConfig config, int count,
-      double offsetX, double offsetY, double offsetZ) {
-    Particle particle = particleFor(config.effectType());
-    if (particle == Particle.DUST) {
-      location.getWorld().spawnParticle(Particle.DUST, location, count, offsetX, offsetY, offsetZ,
-          0.0, dustFor(config.effectType()));
-      return;
-    }
-    location.getWorld().spawnParticle(particle, location, count, offsetX, offsetY, offsetZ, 0.01);
-  }
-
-  private Particle particleFor(org.bukkit.potion.PotionEffectType effectType) {
-    if (effectType == org.bukkit.potion.PotionEffectType.INSTANT_DAMAGE) {
-      return Particle.DAMAGE_INDICATOR;
-    }
-    if (effectType == org.bukkit.potion.PotionEffectType.POISON) {
-      return Particle.DUST;
-    }
-    if (effectType == org.bukkit.potion.PotionEffectType.REGENERATION) {
-      return Particle.HEART;
-    }
-    if (effectType == org.bukkit.potion.PotionEffectType.LEVITATION) {
-      return Particle.CLOUD;
-    }
-    return Particle.DUST;
-  }
-
-  private Particle.DustOptions dustFor(org.bukkit.potion.PotionEffectType effectType) {
-    if (effectType == org.bukkit.potion.PotionEffectType.POISON) {
-      return new Particle.DustOptions(Color.fromRGB(0x4E9331), 1.15f);
-    }
-    return new Particle.DustOptions(Color.WHITE, 1.0f);
-  }
-
-  private boolean isOffensiveEffect(org.bukkit.potion.PotionEffectType effectType) {
-    return effectType == org.bukkit.potion.PotionEffectType.INSTANT_DAMAGE
-        || effectType == org.bukkit.potion.PotionEffectType.POISON;
-  }
-
-  private void consumeOne(ItemStack item) {
-    if (item.getAmount() <= 1) {
-      item.setAmount(0);
-      return;
-    }
-    item.setAmount(item.getAmount() - 1);
-  }
-
-  private String blockKey(Block block) {
-    return block.getWorld().getUID() + ":" + block.getX() + ":" + block.getY() + ":" + block.getZ();
-  }
-
-  private boolean isConcrete(Material material) {
-    return material.name().endsWith("_CONCRETE");
-  }
-
-  private Material concreteMaterial(ArenaTeamColor color) {
-    return TeamPalette.concrete(color);
-  }
-
-  private Color leatherColor(ArenaTeamColor color) {
-    return TeamPalette.leather(color);
-  }
-
   private void setArenaPlayersGameMode(RuntimeArena arena, GameMode gameMode) {
     for (String playerName : arena.playerNames()) {
       Player player = Bukkit.getPlayerExact(playerName);
       if (player != null) {
         player.setGameMode(gameMode);
       }
-    }
-  }
-
-  private void clearArenaPlayerInventories(RuntimeArena arena) {
-    for (String playerName : arena.playerNames()) {
-      Player player = Bukkit.getPlayerExact(playerName);
-      if (player == null) {
-        continue;
-      }
-      player.getInventory().clear();
-      player.getInventory().setArmorContents(null);
-      player.getInventory().setItemInOffHand(new ItemStack(Material.AIR));
-    }
-  }
-
-  private void startInfiniteBlockMaintenance(RuntimeArena arena) {
-    BukkitTask task = new BukkitRunnable() {
-      @Override
-      public void run() {
-        RuntimeArena current = registry.get(arena.arenaId());
-        if (current == null || current.status() != ArenaStatus.RUNNING) {
-          cancel();
-          return;
-        }
-        for (String playerName : current.playerNames()) {
-          Player player = Bukkit.getPlayerExact(playerName);
-          if (player == null) {
-            continue;
-          }
-          current.settings().beginningItems().stream()
-              .filter(entry -> entry.mode() == ArenaItemMode.INFINITE_OFFHAND).findFirst()
-              .ifPresent(entry -> ensureInfiniteOffhand(current, player, entry));
-        }
-      }
-    }.runTaskTimer(plugin, 1L, 5L);
-    arena.boundaryTasks().add(task);
-  }
-
-  private void ensureInfiniteOffhand(RuntimeArena arena, Player player, ArenaItemEntry entry) {
-    ItemStack offhand = player.getInventory().getItemInOffHand();
-    Material material =
-        arena.teamOf(player.getName()).map(this::concreteMaterial).orElse(Material.WHITE_CONCRETE);
-    if (offhand == null || offhand.getType() != material || offhand.getAmount() < 64) {
-      player.getInventory().setItemInOffHand(createArenaItemStack(arena, player.getName(), entry));
     }
   }
 
@@ -2107,21 +1293,6 @@ public final class ArenaController implements Listener {
     return TeamDistribution.teamSpawnMap(spawns);
   }
 
-  private Player attackingPlayer(Entity damager) {
-    if (damager instanceof Player player) {
-      return player;
-    }
-    if (damager instanceof Projectile projectile
-        && projectile.getShooter() instanceof Player player) {
-      return player;
-    }
-    return null;
-  }
-
-  private long toTicks(java.time.Duration duration) {
-    return Math.max(0L, duration.toMillis() / 50L);
-  }
-
   private ArenaGameResult gameResult(RuntimeArena arena, ArenaStopReason reason) {
     return new ArenaGameResult(arena.arenaId(), arena.winningTeam(), arena.teamStats(),
         arena.playerStats(), reason);
@@ -2146,21 +1317,5 @@ public final class ArenaController implements Listener {
     CompletableFuture<T> future = new CompletableFuture<>();
     future.completeExceptionally(throwable);
     return future;
-  }
-
-  private record ActivePotionProjectile(String arenaId, ArenaPotionItemConfig config,
-      String shooterName, String itemName) {
-  }
-
-  private record DeathCredit(String killerName, DeathSource source, String sourceName,
-      long expiresAtMillis) {
-  }
-
-  private record RecentCreeperPlacement(String playerName, Location location,
-      long createdAtMillis) {
-  }
-
-  private enum DeathSource {
-    PLAYER, TNT, CREEPER, POTION
   }
 }
