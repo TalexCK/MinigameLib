@@ -11,9 +11,6 @@ import com.talexck.minigamelib.api.arena.ArenaItemEntry;
 import com.talexck.minigamelib.api.arena.ArenaItemMode;
 import com.talexck.minigamelib.api.arena.ArenaLayout;
 import com.talexck.minigamelib.api.arena.ArenaLifecycleListener;
-import com.talexck.minigamelib.api.arena.ArenaLootChest;
-import com.talexck.minigamelib.api.arena.ArenaLootEntry;
-import com.talexck.minigamelib.api.arena.ArenaLootPlacementMode;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaPlayerStats;
 import com.talexck.minigamelib.api.arena.ArenaPotionItemConfig;
@@ -30,10 +27,6 @@ import com.talexck.minigamelib.api.arena.ArenaTemplate;
 import com.talexck.minigamelib.api.arena.ArenaTitleConfig;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import com.talexck.minigamelib.api.arena.ArenaVerticalBoundary;
-import com.talexck.minigamelib.core.chest.ChestDefinition;
-import com.talexck.minigamelib.core.chest.ChestLootEntry;
-import com.talexck.minigamelib.core.chest.ChestPlacementMode;
-import com.talexck.minigamelib.core.chest.ChestPosition;
 import com.talexck.minigamelib.core.chest.DefaultChestService;
 import com.talexck.minigamelib.core.resourcepack.ResourcePackService;
 import com.talexck.minigamelib.core.world.DefaultWorldService;
@@ -124,8 +117,9 @@ public final class ArenaController implements Listener {
   private final java.util.Set<String> infinitePlacedBlocks = ConcurrentHashMap.newKeySet();
   private final ConcurrentMap<String, ArenaTemplate> templates = new ConcurrentHashMap<>();
   private final ArenaRegistry registry = new ArenaRegistry();
+  private final SpawnCageService spawnCageService = new SpawnCageService();
+  private final LootService lootService;
   private final ConcurrentMap<String, RuntimeBoundary> boundaries = new ConcurrentHashMap<>();
-  private final ConcurrentMap<String, List<BlockSnapshot>> spawnCages = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, ActivePotionProjectile> potionProjectiles =
       new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, DeathCredit> deathCredits = new ConcurrentHashMap<>();
@@ -140,6 +134,7 @@ public final class ArenaController implements Listener {
     this.worldService = worldService;
     this.chestService = new DefaultChestService(plugin);
     this.resourcePackService = new ResourcePackService(plugin);
+    this.lootService = new LootService(chestService);
     Bukkit.getPluginManager().registerEvents(this, plugin);
     this.lobbyTabRefreshTask = Bukkit.getScheduler().runTaskTimer(plugin,
         this::resetLobbyTabViews, 40L, 40L);
@@ -195,7 +190,7 @@ public final class ArenaController implements Listener {
         throw new IllegalStateException("Arena already exists: " + request.arenaId());
       }
       setupWorld(arena);
-      startLootLifecycle(arena);
+      lootService.start(arena);
       listener.onArenaCreated(arena.handle());
       broadcastMessagesNow(arena, arena.settings().messages().created(), 0, null);
       return arena.handle();
@@ -250,7 +245,7 @@ public final class ArenaController implements Listener {
         playConfiguredSound(arena, arena.settings().sounds().gameStopped());
         setArenaPlayersGameMode(arena, GameMode.SPECTATOR);
         clearArenaPlayerInventories(arena);
-        clearSpawnCage(arena);
+        spawnCageService.clear(arena.arenaId());
         chestService.stopArenaChests(arenaId, false);
         cancelBoundaryTasks(arena);
         boundaries.remove(arenaId);
@@ -375,7 +370,7 @@ public final class ArenaController implements Listener {
         chestService.stopArenaChests(arenaId, false);
         cancelBoundaryTasks(arena);
         boundaries.remove(arenaId);
-        clearSpawnCage(arena);
+        spawnCageService.clear(arena.arenaId());
         clearBossBar(arena);
         worldService.unloadWorld(arena.world().world(), arena.settings().saveWorldOnUnload());
         arena.setStatus(ArenaStatus.DESTROYED);
@@ -402,48 +397,6 @@ public final class ArenaController implements Listener {
             arena.settings().verticalBoundary().upperY()));
   }
 
-  private void startLootLifecycle(RuntimeArena arena) {
-    List<ChestDefinition> definitions =
-        arena.settings().lootChests().isEmpty() ? defaultLootChestDefinitions(arena)
-            : arena.settings().lootChests().stream().map(this::toChestDefinition).toList();
-
-    chestService.startArenaChests(arena.arenaId(), arena.world().world(), definitions,
-        (definition, location) -> {
-          ChestPosition position = definition.position();
-          ArenaPoint point = new ArenaPoint(position.x(), position.y(), position.z(), 0f, 0f);
-          arena.listener().onLootChestGenerated(arena.handle(), point, location);
-        });
-  }
-
-  private List<ChestDefinition> defaultLootChestDefinitions(RuntimeArena arena) {
-    return arena.layout().lootChestPoints().stream()
-        .map(point -> new ChestDefinition(new ChestPosition(point.x(), point.y(), point.z()),
-            List.of(), ChestPlacementMode.AUTO, false, false, 0L, 0L))
-        .toList();
-  }
-
-  private ChestDefinition toChestDefinition(ArenaLootChest chest) {
-    ArenaPoint point = chest.position();
-    return new ChestDefinition(new ChestPosition(point.x(), point.y(), point.z()),
-        chest.lootTable().stream().map(this::toChestLootEntry).toList(),
-        toChestPlacementMode(chest.placementMode()), chest.timedRegeneration(),
-        chest.timedDestruction(), chest.regenerationPeriodTicks(), chest.destructionDelayTicks(),
-        chest.minItems(), chest.maxItems(), chest.displayName(), chest.splitStacks(),
-        chest.blockMaterial(), chest.visualModelKey(), chest.openVisualModelKey());
-  }
-
-  private ChestLootEntry toChestLootEntry(ArenaLootEntry entry) {
-    return new ChestLootEntry(entry.items(), entry.weight(), entry.earliestGenerationRound());
-  }
-
-  private ChestPlacementMode toChestPlacementMode(ArenaLootPlacementMode mode) {
-    return switch (mode) {
-      case AUTO -> ChestPlacementMode.AUTO;
-      case CENTER -> ChestPlacementMode.CENTER;
-      case MIRRORED -> ChestPlacementMode.MIRRORED;
-    };
-  }
-
   private void teleportPlayersToSpawn(RuntimeArena arena) {
     World world = arena.world().world();
     Map<ArenaTeamColor, List<ArenaPoint>> teamSpawns = teamSpawnMap(arena.layout().teamSpawns());
@@ -451,7 +404,7 @@ public final class ArenaController implements Listener {
     for (ArenaTeam team : arena.teams()) {
       List<ArenaPoint> spawnPoints =
           teamSpawns.getOrDefault(team.color(), arena.layout().spawnPoints());
-      createTeamSpawnCage(arena, world, spawnPoints);
+      spawnCageService.createTeamSpawnCage(arena.arenaId(), world, spawnPoints);
       for (int index = 0; index < team.playerNames().size(); index++) {
         Player player = Bukkit.getPlayerExact(team.playerNames().get(index));
         if (player == null || spawnPoints.isEmpty()) {
@@ -593,7 +546,7 @@ public final class ArenaController implements Listener {
       chestService.stopArenaChests(arena.arenaId(), true);
       cancelBoundaryTasks(arena);
       boundaries.remove(arena.arenaId());
-      clearSpawnCage(arena);
+      spawnCageService.clear(arena.arenaId());
       clearBossBar(arena);
       clearScoreboards(arena);
       arena.setStatus(ArenaStatus.STOPPED);
@@ -666,7 +619,7 @@ public final class ArenaController implements Listener {
   private void startGame(RuntimeArena arena, CompletableFuture<Void> future) {
     arena.setStatus(ArenaStatus.RUNNING);
     arena.markGameStarted(System.currentTimeMillis());
-    clearSpawnCage(arena);
+    spawnCageService.clear(arena.arenaId());
     setArenaPlayersGameMode(arena, GameMode.SURVIVAL);
     startInfiniteBlockMaintenance(arena);
     startBoundaryLifecycle(arena);
@@ -2281,64 +2234,6 @@ public final class ArenaController implements Listener {
     arena.boundaryTasks().clear();
   }
 
-  private void createTeamSpawnCage(RuntimeArena arena, World world, List<ArenaPoint> spawnPoints) {
-    if (spawnPoints.isEmpty()) {
-      return;
-    }
-    SpawnGeometry.TeamSpawnBounds bounds = SpawnGeometry.teamSpawnBounds(spawnPoints).orElse(null);
-    if (bounds == null) {
-      for (ArenaPoint point : spawnPoints) {
-        createSpawnCage(arena, world, blockCoordinate(point.x()), blockCoordinate(point.y()),
-            blockCoordinate(point.z()));
-      }
-      return;
-    }
-    createSpawnCage(arena, world, bounds.centerX(), bounds.baseY(), bounds.centerZ());
-  }
-
-  private void createSpawnCage(RuntimeArena arena, World world, int centerX, int baseY,
-      int centerZ) {
-    List<BlockSnapshot> snapshots =
-        spawnCages.computeIfAbsent(arena.arenaId(), ignored -> new ArrayList<>());
-    for (int yOffset = 0; yOffset < 3; yOffset++) {
-      for (int dx = -2; dx <= 2; dx++) {
-        for (int dz = -2; dz <= 2; dz++) {
-          if (!isSpawnCageBlock(dx, dz)) {
-            continue;
-          }
-          Block block = world.getBlockAt(centerX + dx, baseY + yOffset, centerZ + dz);
-          if (!block.getType().isAir()) {
-            continue;
-          }
-          snapshots.add(new BlockSnapshot(block, block.getType()));
-          block.setType(Material.BARRIER, false);
-        }
-      }
-    }
-  }
-
-  private boolean isSpawnCageBlock(int dx, int dz) {
-    boolean edge = Math.abs(dx) == 2 || Math.abs(dz) == 2;
-    boolean corner = Math.abs(dx) == 2 && Math.abs(dz) == 2;
-    return edge && !corner;
-  }
-
-  private int blockCoordinate(double value) {
-    return SpawnGeometry.blockCoordinate(value);
-  }
-
-  private void clearSpawnCage(RuntimeArena arena) {
-    List<BlockSnapshot> snapshots = spawnCages.remove(arena.arenaId());
-    if (snapshots == null) {
-      return;
-    }
-    for (BlockSnapshot snapshot : snapshots) {
-      if (snapshot.block().getType() == Material.BARRIER) {
-        snapshot.block().setType(snapshot.material(), false);
-      }
-    }
-  }
-
   private void startBoundaryLifecycle(RuntimeArena arena) {
     BukkitTask task = new BukkitRunnable() {
       private int ticks;
@@ -2641,9 +2536,6 @@ public final class ArenaController implements Listener {
       this.targetLowerY = ArenaVerticalBoundary.DISABLED;
       this.targetUpperY = ArenaVerticalBoundary.DISABLED;
     }
-  }
-
-  private record BlockSnapshot(Block block, Material material) {
   }
 
   private record ActivePotionProjectile(String arenaId, ArenaPotionItemConfig config,
