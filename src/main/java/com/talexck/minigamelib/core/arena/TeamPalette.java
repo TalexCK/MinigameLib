@@ -80,6 +80,22 @@ final class TeamPalette {
     };
   }
 
+  /** Default localized team display name. Games may override via their own text where needed. */
+  static String displayName(ArenaTeamColor color) {
+    return switch (color) {
+      case RED -> "红队";
+      case YELLOW -> "黄队";
+      case GREEN -> "绿队";
+      case BLUE -> "蓝队";
+      case ORANGE -> "橙队";
+      case PURPLE -> "紫队";
+      case WHITE -> "白队";
+      case PINK -> "粉队";
+      case GRAY -> "灰队";
+      case CYAN -> "青队";
+    };
+  }
+
   static BarColor tabBarColor(org.bukkit.boss.BarColor color) {
     return switch (color) {
       case PINK -> BarColor.PINK;
