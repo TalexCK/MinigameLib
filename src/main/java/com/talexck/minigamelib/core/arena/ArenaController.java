@@ -102,7 +102,6 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import net.kyori.adventure.title.Title;
 
 import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -250,6 +249,7 @@ public final class ArenaController implements Listener {
         sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0, reason);
         playConfiguredSound(arena, arena.settings().sounds().gameStopped());
         setArenaPlayersGameMode(arena, GameMode.SPECTATOR);
+        clearArenaPlayerInventories(arena);
         clearSpawnCage(arena);
         chestService.stopArenaChests(arenaId, false);
         cancelBoundaryTasks(arena);
@@ -1021,20 +1021,7 @@ public final class ArenaController implements Listener {
   }
 
   private int visibleTabLength(String text) {
-    int length = 0;
-    for (int index = 0; index < text.length(); index++) {
-      char character = text.charAt(index);
-      if (character == '&' && index + 1 < text.length()) {
-        index++;
-        continue;
-      }
-      if (character == '§' && index + 1 < text.length()) {
-        index++;
-        continue;
-      }
-      length += character > 0x7F ? 2 : 1;
-    }
-    return length;
+    return TextRender.visibleLength(text);
   }
 
   private void resetTabLayout(RuntimeArena arena) {
@@ -1311,18 +1298,23 @@ public final class ArenaController implements Listener {
     String deaths = playerName == null ? "0"
         : arena.playerStats().stream().filter(stats -> stats.playerName().equals(playerName))
             .findFirst().map(stats -> Integer.toString(stats.deaths())).orElse("0");
-    return text.replace("{arena}", arena.arenaId()).replace("{template}", arena.templateId())
-        .replace("{world}", arena.world().runtimeWorldName())
-        .replace("{status}", arena.status().name())
-        .replace("{players}", Integer.toString(arena.playerNames().size()))
-        .replace("{aliveTeams}",
-            Long.toString(arena.teams().stream()
-                .filter(teamValue -> !arena.isTeamFailed(teamValue.color())).count()))
-        .replace("{winner}", arena.winningTeam() == null ? "" : arena.winningTeam().name())
-        .replace("{team}", team).replace("{kills}", kills).replace("{deaths}", deaths)
-        .replace("{countdown}", Integer.toString(Math.max(0, secondsLeft)))
-        .replace("%seconds%", Integer.toString(Math.max(0, secondsLeft)))
-        .replace("{reason}", reason == null ? "" : reason.name());
+    String countdown = Integer.toString(Math.max(0, secondsLeft));
+    Map<String, String> placeholders = new java.util.LinkedHashMap<>();
+    placeholders.put("{arena}", arena.arenaId());
+    placeholders.put("{template}", arena.templateId());
+    placeholders.put("{world}", arena.world().runtimeWorldName());
+    placeholders.put("{status}", arena.status().name());
+    placeholders.put("{players}", Integer.toString(arena.playerNames().size()));
+    placeholders.put("{aliveTeams}", Long.toString(arena.teams().stream()
+        .filter(teamValue -> !arena.isTeamFailed(teamValue.color())).count()));
+    placeholders.put("{winner}", arena.winningTeam() == null ? "" : arena.winningTeam().name());
+    placeholders.put("{team}", team);
+    placeholders.put("{kills}", kills);
+    placeholders.put("{deaths}", deaths);
+    placeholders.put("{countdown}", countdown);
+    placeholders.put("%seconds%", countdown);
+    placeholders.put("{reason}", reason == null ? "" : reason.name());
+    return TextRender.render(text, placeholders);
   }
 
   private Component coloredComponent(String text) {
@@ -2114,6 +2106,18 @@ public final class ArenaController implements Listener {
     }
   }
 
+  private void clearArenaPlayerInventories(RuntimeArena arena) {
+    for (String playerName : arena.playerNames()) {
+      Player player = Bukkit.getPlayerExact(playerName);
+      if (player == null) {
+        continue;
+      }
+      player.getInventory().clear();
+      player.getInventory().setArmorContents(null);
+      player.getInventory().setItemInOffHand(new ItemStack(Material.AIR));
+    }
+  }
+
   private void startInfiniteBlockMaintenance(RuntimeArena arena) {
     BukkitTask task = new BukkitRunnable() {
       @Override
@@ -2254,29 +2258,16 @@ public final class ArenaController implements Listener {
   private List<ArenaTeam> resolveTeams(ArenaCreateRequest request) {
     ArenaLayout layout = request.layout() != null ? request.layout()
         : templates.get(request.templateId()).defaultLayout();
+    ArenaSettings settings = request.settings() != null ? request.settings()
+        : templates.get(request.templateId()).defaultSettings();
     List<ArenaTeamColor> configuredColors =
         layout.teamSpawns().stream().map(ArenaTeamSpawn::color).distinct().toList();
-    ArenaTeamColor[] colors = configuredColors.isEmpty() ? ArenaTeamColor.values()
-        : configuredColors.toArray(ArenaTeamColor[]::new);
-    int teamCount = Math.min(request.initialPlayerNames().size(), colors.length);
-    List<ArenaTeam> teams = new ArrayList<>();
-    for (int teamIndex = 0; teamIndex < teamCount; teamIndex++) {
-      List<String> playerNames = new ArrayList<>();
-      for (int playerIndex = teamIndex; playerIndex < request.initialPlayerNames()
-          .size(); playerIndex += teamCount) {
-        playerNames.add(request.initialPlayerNames().get(playerIndex));
-      }
-      teams.add(new ArenaTeam(colors[teamIndex], playerNames));
-    }
-    return teams;
+    return TeamDistribution.resolveTeams(request.initialPlayerNames(), configuredColors,
+        settings.maxTeamSize());
   }
 
   private Map<ArenaTeamColor, List<ArenaPoint>> teamSpawnMap(List<ArenaTeamSpawn> spawns) {
-    Map<ArenaTeamColor, List<ArenaPoint>> map = new EnumMap<>(ArenaTeamColor.class);
-    for (ArenaTeamSpawn spawn : spawns) {
-      map.put(spawn.color(), spawn.spawnPoints());
-    }
-    return map;
+    return TeamDistribution.teamSpawnMap(spawns);
   }
 
   private void scheduleBoundaryStages(RuntimeArena arena) {
@@ -2300,7 +2291,7 @@ public final class ArenaController implements Listener {
     if (spawnPoints.isEmpty()) {
       return;
     }
-    TeamSpawnBounds bounds = teamSpawnBounds(spawnPoints).orElse(null);
+    SpawnGeometry.TeamSpawnBounds bounds = SpawnGeometry.teamSpawnBounds(spawnPoints).orElse(null);
     if (bounds == null) {
       for (ArenaPoint point : spawnPoints) {
         createSpawnCage(arena, world, blockCoordinate(point.x()), blockCoordinate(point.y()),
@@ -2309,22 +2300,6 @@ public final class ArenaController implements Listener {
       return;
     }
     createSpawnCage(arena, world, bounds.centerX(), bounds.baseY(), bounds.centerZ());
-  }
-
-  private Optional<TeamSpawnBounds> teamSpawnBounds(List<ArenaPoint> spawnPoints) {
-    if (spawnPoints.size() < 4) {
-      return Optional.empty();
-    }
-    int minX = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.x())).min().orElse(0);
-    int maxX = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.x())).max().orElse(0);
-    int minY = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.y())).min().orElse(0);
-    int maxY = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.y())).max().orElse(0);
-    int minZ = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.z())).min().orElse(0);
-    int maxZ = spawnPoints.stream().mapToInt(point -> blockCoordinate(point.z())).max().orElse(0);
-    if (maxX - minX != 2 || maxZ - minZ != 2 || minY != maxY) {
-      return Optional.empty();
-    }
-    return Optional.of(new TeamSpawnBounds((minX + maxX) / 2, minY, (minZ + maxZ) / 2));
   }
 
   private void createSpawnCage(RuntimeArena arena, World world, int centerX, int baseY,
@@ -2355,7 +2330,7 @@ public final class ArenaController implements Listener {
   }
 
   private int blockCoordinate(double value) {
-    return (int) Math.floor(value);
+    return SpawnGeometry.blockCoordinate(value);
   }
 
   private void clearSpawnCage(RuntimeArena arena) {
@@ -2535,14 +2510,11 @@ public final class ArenaController implements Listener {
   }
 
   private double lerp(double start, double end, double progress) {
-    return start + (end - start) * progress;
+    return BoundaryMath.lerp(start, end, progress);
   }
 
   private double lerpBoundaryY(double start, double end, double progress) {
-    if (start == ArenaVerticalBoundary.DISABLED || end == ArenaVerticalBoundary.DISABLED) {
-      return end;
-    }
-    return lerp(start, end, progress);
+    return BoundaryMath.lerpBoundaryY(start, end, progress);
   }
 
   private Player attackingPlayer(Entity damager) {
@@ -2684,9 +2656,6 @@ public final class ArenaController implements Listener {
 
   private record ActivePotionProjectile(String arenaId, ArenaPotionItemConfig config,
       String shooterName, String itemName) {
-  }
-
-  private record TeamSpawnBounds(int centerX, int baseY, int centerZ) {
   }
 
   private record DeathCredit(String killerName, DeathSource source, String sourceName,

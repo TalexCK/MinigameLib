@@ -5,6 +5,7 @@ import java.util.Objects;
 
 public record ArenaSettings(
     int countdownSeconds,
+    int maxTeamSize,
     String returnWorldName,
     ArenaPoint returnPoint,
     boolean saveWorldOnUnload,
@@ -22,15 +23,16 @@ public record ArenaSettings(
     ArenaVictoryCondition victoryCondition,
     ArenaMessages messages) {
 
-  public ArenaSettings(int countdownSeconds, String returnWorldName, ArenaPoint returnPoint,
-      boolean saveWorldOnUnload, ArenaScoreboardConfig scoreboard, ArenaBossBarConfig bossBar,
-      ArenaActionBarConfig actionBar, ArenaTitleConfig title, ArenaSoundConfig sounds,
-      ArenaResourcePackConfig resourcePack, List<ArenaItemEntry> beginningItems,
-      List<ArenaLootChest> lootChests, ArenaBoundaryWall initialBoundaryWall,
-      List<ArenaBoundaryStage> boundaryStages, ArenaVictoryCondition victoryCondition,
-      ArenaMessages messages) {
-    this(countdownSeconds, returnWorldName, returnPoint, saveWorldOnUnload, scoreboard, bossBar,
-        actionBar, title, sounds, resourcePack, beginningItems, lootChests, initialBoundaryWall,
+  public ArenaSettings(int countdownSeconds, int maxTeamSize, String returnWorldName,
+      ArenaPoint returnPoint, boolean saveWorldOnUnload, ArenaScoreboardConfig scoreboard,
+      ArenaBossBarConfig bossBar, ArenaActionBarConfig actionBar, ArenaTitleConfig title,
+      ArenaSoundConfig sounds, ArenaResourcePackConfig resourcePack,
+      List<ArenaItemEntry> beginningItems, List<ArenaLootChest> lootChests,
+      ArenaBoundaryWall initialBoundaryWall, List<ArenaBoundaryStage> boundaryStages,
+      ArenaVictoryCondition victoryCondition, ArenaMessages messages) {
+    this(countdownSeconds, maxTeamSize, returnWorldName, returnPoint, saveWorldOnUnload, scoreboard,
+        bossBar, actionBar, title, sounds, resourcePack, beginningItems, lootChests,
+        initialBoundaryWall,
         new ArenaVerticalBoundary(ArenaVerticalBoundary.DISABLED, ArenaVerticalBoundary.DISABLED),
         boundaryStages, victoryCondition, messages);
   }
@@ -71,6 +73,9 @@ public record ArenaSettings(
     }
     if (countdownSeconds < 0) {
       throw new IllegalArgumentException("countdownSeconds cannot be negative");
+    }
+    if (maxTeamSize < 0) {
+      throw new IllegalArgumentException("maxTeamSize cannot be negative");
     }
     if (returnWorldName.isBlank()) {
       throw new IllegalArgumentException("returnWorldName cannot be blank");
