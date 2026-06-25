@@ -3,3 +3,7 @@ plugin:
   disabled: "MinigameLib 插件已禁用。"
 setup:
   marker-tool-name: "Setup 标记木斧"
+stats:
+  board-title-kills: "击杀总榜"
+  board-title-wins: "获胜总榜"
+  board-title-experience: "经验值总榜"

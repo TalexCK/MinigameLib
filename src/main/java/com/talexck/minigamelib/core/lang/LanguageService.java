@@ -7,8 +7,6 @@ import java.io.File;
 
 public final class LanguageService {
 
-  private static final String DEFAULT_LANGUAGE = "zh_cn";
-
   private final JavaPlugin plugin;
   private YamlConfiguration messages;
 
@@ -18,9 +16,7 @@ public final class LanguageService {
   }
 
   public void reload() {
-    plugin.saveDefaultConfig();
-    String language = plugin.getConfig().getString("language", DEFAULT_LANGUAGE);
-    String resourcePath = "lang/" + language + ".yml";
+    String resourcePath = "lang/zh_cn.yml";
     File file = new File(plugin.getDataFolder(), resourcePath);
     if (!file.isFile()) {
       plugin.saveResource(resourcePath, false);

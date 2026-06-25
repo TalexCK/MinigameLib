@@ -38,12 +38,15 @@ final class BoundaryService implements Listener {
   private final JavaPlugin plugin;
   private final ArenaRegistry registry;
   private final DefaultChestService chestService;
+  private final CombatService combatService;
   private final ConcurrentMap<String, RuntimeBoundary> boundaries = new ConcurrentHashMap<>();
 
-  BoundaryService(JavaPlugin plugin, ArenaRegistry registry, DefaultChestService chestService) {
+  BoundaryService(JavaPlugin plugin, ArenaRegistry registry, DefaultChestService chestService,
+      CombatService combatService) {
     this.plugin = plugin;
     this.registry = registry;
     this.chestService = chestService;
+    this.combatService = combatService;
     Bukkit.getPluginManager().registerEvents(this, plugin);
   }
 
@@ -259,9 +262,7 @@ final class BoundaryService implements Listener {
     if (!outsideConfigured && !belowWorld) {
       return;
     }
-    if (!arena.isFailed(player.getName())) {
-      player.setHealth(0.0);
-    }
+    combatService.eliminatePlayer(player);
   }
 
   @EventHandler

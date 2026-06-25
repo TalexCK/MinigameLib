@@ -1,6 +1,5 @@
 package com.talexck.minigamelib.core.arena;
 
-import com.talexck.minigamelib.api.arena.ArenaActionBarConfig;
 import com.talexck.minigamelib.api.arena.ArenaBossBarConfig;
 import com.talexck.minigamelib.api.arena.ArenaScoreboardConfig;
 import com.talexck.minigamelib.api.arena.ArenaSound;
@@ -9,7 +8,6 @@ import com.talexck.minigamelib.api.arena.ArenaStatus;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
 import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
-import com.talexck.minigamelib.api.arena.ArenaTitleConfig;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -17,7 +15,6 @@ import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
 import org.bukkit.boss.BossBar;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scoreboard.Criteria;
 import org.bukkit.scoreboard.DisplaySlot;
 import org.bukkit.scoreboard.Objective;
@@ -36,13 +33,9 @@ import java.util.Map;
  */
 final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
 
-  private final JavaPlugin plugin;
-  private final ArenaRegistry registry;
   private final TabDisplayService tab;
 
-  DisplayService(JavaPlugin plugin, ArenaRegistry registry, TabDisplayService tab) {
-    this.plugin = plugin;
-    this.registry = registry;
+  DisplayService(TabDisplayService tab) {
     this.tab = tab;
   }
 
@@ -74,9 +67,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
 
       List<String> lines = config.lines();
       for (int index = 0; index < lines.size(); index++) {
-        String line = uniqueScoreboardLine(
-            LegacyText.legacySection(render(arena, lines.get(index), secondsLeft, null, playerName)),
-            index);
+        String line = uniqueScoreboardLine(LegacyText
+            .legacySection(render(arena, lines.get(index), secondsLeft, null, playerName)), index);
         objective.getScore(line).setScore(lines.size() - index);
       }
       player.setScoreboard(scoreboard);
@@ -118,8 +110,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
     BossBar bossBar = arena.bossBar();
     if (bossBar == null) {
       bossBar = Bukkit.createBossBar(
-          LegacyText.legacySection(render(arena, config.title(), secondsLeft, null)), config.color(),
-          config.style());
+          LegacyText.legacySection(render(arena, config.title(), secondsLeft, null)),
+          config.color(), config.style());
       arena.setBossBar(bossBar);
     }
     bossBar.setTitle(LegacyText.legacySection(render(arena, config.title(), secondsLeft, null)));
@@ -184,8 +176,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
     for (String playerName : arena.playerNames()) {
       Player player = Bukkit.getPlayerExact(playerName);
       if (player != null) {
-        player.sendMessage(LegacyText.component(render(arena, message, secondsLeft, reason,
-            playerName)));
+        player.sendMessage(
+            LegacyText.component(render(arena, message, secondsLeft, reason, playerName)));
       }
     }
   }
@@ -217,7 +209,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
     }
   }
 
-  void sendTitle(RuntimeArena arena, ArenaTitleFrame frame, int secondsLeft, ArenaStopReason reason) {
+  void sendTitle(RuntimeArena arena, ArenaTitleFrame frame, int secondsLeft,
+      ArenaStopReason reason) {
     if (frame == null || (frame.title().isBlank() && frame.subtitle().isBlank())) {
       return;
     }
@@ -236,8 +229,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
   void sendCountdownTitle(RuntimeArena arena, int secondsLeft) {
     // Hypixel-style emphasised countdown: large number with a pulsing colour for the final ticks.
     String color = secondsLeft <= 3 ? "&c&l" : secondsLeft <= 5 ? "&e&l" : "&a&l";
-    ArenaTitleFrame frame = new ArenaTitleFrame(color + "%seconds%", "&7游戏即将开始",
-        Duration.ZERO, Duration.ofMillis(900), Duration.ofMillis(150));
+    ArenaTitleFrame frame = new ArenaTitleFrame(color + "%seconds%", "&7游戏即将开始", Duration.ZERO,
+        Duration.ofMillis(900), Duration.ofMillis(150));
     sendTitle(arena, frame, secondsLeft, null);
   }
 
@@ -300,9 +293,9 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
           default -> "&8&l" + (index + 1) + " ";
         };
         String line = medal + TeamPalette.legacyCode(color) + "&l" + TeamPalette.displayName(color)
-            + " &8» " + finalRankingPlayers(team, color)
-            + " &8| &e" + arena.teamScore(team, now) + "&7分 &8· &c" + arena.teamKills(team)
-            + "&7杀 &8· &a" + arena.teamSurvivalSeconds(team, now) + "&7s";
+            + " &8» " + finalRankingPlayers(team, color) + " &8| &e" + arena.teamScore(team, now)
+            + "&7分 &8· &c" + arena.teamKills(team) + "&7杀 &8· &a"
+            + arena.teamSurvivalSeconds(team, now) + "&7s";
         player.sendMessage(LegacyText.component(line));
       }
       player.sendMessage(LegacyText.component(bar));
@@ -348,8 +341,8 @@ final class DisplayService implements ArenaDisplay, ArenaTextRenderer {
     placeholders.put("{players}", Integer.toString(arena.playerNames().size()));
     placeholders.put("{aliveTeams}", Long.toString(arena.teams().stream()
         .filter(teamValue -> !arena.isTeamFailed(teamValue.color())).count()));
-    placeholders.put("{winner}", arena.winningTeam() == null ? ""
-        : TeamPalette.displayName(arena.winningTeam()));
+    placeholders.put("{winner}",
+        arena.winningTeam() == null ? "" : TeamPalette.displayName(arena.winningTeam()));
     placeholders.put("{team}", team);
     placeholders.put("{kills}", kills);
     placeholders.put("{deaths}", deaths);

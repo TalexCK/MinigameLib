@@ -6,19 +6,26 @@ import com.talexck.minigamelib.api.arena.ArenaTeamColor;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityPlaceEvent;
-import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Comparator;
@@ -53,39 +60,23 @@ final class CombatService implements Listener {
     Bukkit.getPluginManager().registerEvents(this, plugin);
   }
 
-  @EventHandler
-  public void onPlayerDeath(PlayerDeathEvent event) {
-    Player player = event.getEntity();
-    RuntimeArena arena = registry.findRunningByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
+  @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+  public void onEntityDamage(EntityDamageEvent event) {
+    if (!(event.getEntity() instanceof Player player)) {
       return;
     }
-    event.setShowDeathMessages(false);
-    event.deathMessage(null);
-
-    Player directKiller = player.getKiller();
-    String creditedKillerName = null;
-    String messageKillerName = null;
-    if (directKiller != null && arena.playerNames().contains(directKiller.getName())) {
-      messageKillerName = directKiller.getName();
-      if (isCreditableKill(arena, player.getName(), directKiller.getName())) {
-        creditedKillerName = directKiller.getName();
-        arena.recordKill(creditedKillerName);
-        arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
-      }
+    RuntimeArena arena = registry.findRunningByPlayer(player.getName()).orElse(null);
+    if (arena == null || arena.isFailed(player.getName())) {
+      return;
     }
-    DeathCredit credit = validDeathCredit(player).orElse(null);
-    if (messageKillerName == null && credit != null && credit.killerName() != null
-        && arena.playerNames().contains(credit.killerName())) {
-      messageKillerName = credit.killerName();
-      if (isCreditableKill(arena, player.getName(), credit.killerName())) {
-        creditedKillerName = credit.killerName();
-        arena.recordKill(creditedKillerName);
-        arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
-      }
+    if (event.getFinalDamage() < player.getHealth()) {
+      return;
     }
-    broadcastDeathMessage(arena, player.getName(), messageKillerName, credit);
-    failPlayer(arena, player, creditedKillerName);
+    if (event instanceof EntityDamageByEntityEvent entityDamage) {
+      recordDamageCredit(arena, player, entityDamage.getDamager());
+    }
+    event.setCancelled(true);
+    eliminatePlayer(arena, player);
   }
 
   @EventHandler
@@ -176,6 +167,71 @@ final class CombatService implements Listener {
     deathCredits.put(victimId, new DeathCredit(shooterName, DeathSource.POTION,
         itemName == null || itemName.isBlank() ? "药水球" : itemName,
         System.currentTimeMillis() + POTION_CREDIT_TTL_MILLIS));
+  }
+
+  void eliminatePlayer(Player player) {
+    RuntimeArena arena = registry.findRunningByPlayer(player.getName()).orElse(null);
+    if (arena == null || arena.isFailed(player.getName())) {
+      return;
+    }
+    eliminatePlayer(arena, player);
+  }
+
+  private void eliminatePlayer(RuntimeArena arena, Player player) {
+    DeathCredit credit = validDeathCredit(player).orElse(null);
+    String messageKillerName = credit == null ? null : credit.killerName();
+    String creditedKillerName = creditableKillerName(arena, player.getName(), messageKillerName);
+    if (creditedKillerName != null) {
+      arena.recordKill(creditedKillerName);
+      arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
+    }
+    dropInventoryExceptBlocks(player);
+    fakeRespawn(player);
+    broadcastDeathMessage(arena, player.getName(), messageKillerName, credit);
+    failPlayer(arena, player, creditedKillerName);
+  }
+
+  private String creditableKillerName(RuntimeArena arena, String victimName, String killerName) {
+    if (killerName == null || !arena.playerNames().contains(killerName)) {
+      return null;
+    }
+    return isCreditableKill(arena, victimName, killerName) ? killerName : null;
+  }
+
+  private void dropInventoryExceptBlocks(Player player) {
+    Location location = player.getLocation();
+    World world = location.getWorld();
+    if (world == null) {
+      player.getInventory().clear();
+      return;
+    }
+    for (ItemStack stack : player.getInventory().getContents()) {
+      dropIfNonBlock(world, location, stack);
+    }
+    player.getInventory().clear();
+    player.getInventory().setArmorContents(null);
+    player.getInventory().setItemInOffHand(null);
+  }
+
+  private void dropIfNonBlock(World world, Location location, ItemStack stack) {
+    if (stack == null || stack.getType() == Material.AIR || stack.getType().isBlock()) {
+      return;
+    }
+    world.dropItemNaturally(location, stack.clone());
+  }
+
+  private void fakeRespawn(Player player) {
+    player.setFireTicks(0);
+    player.setFallDistance(0.0f);
+    player.setHealth(Math.max(1.0, maxHealth(player)));
+    player.setFoodLevel(20);
+    player.setSaturation(20.0f);
+    player.setGameMode(GameMode.SPECTATOR);
+  }
+
+  private double maxHealth(Player player) {
+    AttributeInstance attribute = player.getAttribute(Attribute.MAX_HEALTH);
+    return attribute == null ? 20.0 : attribute.getValue();
   }
 
   private Optional<DeathCredit> validDeathCredit(Player player) {

@@ -31,18 +31,16 @@ import java.util.function.Supplier;
 final class PlayerEnvironmentService implements Listener {
 
   private final JavaPlugin plugin;
-  private final ArenaRegistry registry;
   private final SpawnCageService spawnCageService;
   private final DisplayService display;
   private final TabDisplayService tab;
   private final ResourcePackService resourcePackService;
   private final Supplier<List<ArenaSettings>> knownSettings;
 
-  PlayerEnvironmentService(JavaPlugin plugin, ArenaRegistry registry,
-      SpawnCageService spawnCageService, DisplayService display, TabDisplayService tab,
+  PlayerEnvironmentService(JavaPlugin plugin, SpawnCageService spawnCageService,
+      DisplayService display, TabDisplayService tab,
       ResourcePackService resourcePackService, Supplier<List<ArenaSettings>> knownSettings) {
     this.plugin = plugin;
-    this.registry = registry;
     this.spawnCageService = spawnCageService;
     this.display = display;
     this.tab = tab;

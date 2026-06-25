@@ -1,5 +1,5 @@
 name: MinigameLib
-version: ${project.version}
+version: '0.1.0'
 main: com.talexck.minigamelib.MinigameLibPlugin
 api-version: '1.21'
 description: A Paper 1.21.11 minigame library plugin.
@@ -7,3 +7,4 @@ authors:
   - TalexCK
 depend:
   - TAB
+  - DecentHolograms

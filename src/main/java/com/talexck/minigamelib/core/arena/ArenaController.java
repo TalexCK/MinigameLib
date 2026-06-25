@@ -13,6 +13,7 @@ import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
 import com.talexck.minigamelib.api.arena.ArenaTeamSpawn;
 import com.talexck.minigamelib.api.arena.ArenaTemplate;
+import com.talexck.minigamelib.api.stats.StatsService;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import com.talexck.minigamelib.core.chest.DefaultChestService;
 import com.talexck.minigamelib.core.resourcepack.ResourcePackService;
@@ -24,7 +25,6 @@ import org.bukkit.GameRules;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -51,20 +51,23 @@ public final class ArenaController implements ArenaLifecycleControl {
   private final CombatService combatService;
   private final ItemCombatService itemCombatService;
   private final PlayerEnvironmentService playerEnvironmentService;
+  private final StatsService statsService;
 
-  public ArenaController(JavaPlugin plugin, DefaultWorldService worldService) {
+  public ArenaController(JavaPlugin plugin, DefaultWorldService worldService,
+      StatsService statsService) {
     this.plugin = plugin;
     this.worldService = worldService;
+    this.statsService = statsService;
     this.chestService = new DefaultChestService(plugin);
     this.resourcePackService = new ResourcePackService(plugin);
     this.lootService = new LootService(chestService);
-    this.boundaryService = new BoundaryService(plugin, registry, chestService);
     this.itemService = new ItemService(plugin, registry);
     this.tabDisplayService = new TabDisplayService(plugin, registry);
-    this.displayService = new DisplayService(plugin, registry, tabDisplayService);
+    this.displayService = new DisplayService(tabDisplayService);
     this.combatService = new CombatService(plugin, registry, displayService, this);
+    this.boundaryService = new BoundaryService(plugin, registry, chestService, combatService);
     this.itemCombatService = new ItemCombatService(plugin, registry, itemService, combatService);
-    this.playerEnvironmentService = new PlayerEnvironmentService(plugin, registry, spawnCageService,
+    this.playerEnvironmentService = new PlayerEnvironmentService(plugin, spawnCageService,
         displayService, tabDisplayService, resourcePackService, this::allKnownSettings);
   }
 
@@ -174,9 +177,12 @@ public final class ArenaController implements ArenaLifecycleControl {
         }
         arena.setStatus(ArenaStatus.STOPPING);
         arena.listener().onGameStopped(arena.handle(), reason);
-        displayService.broadcastMessages(arena, arena.settings().messages().gameStopped(), 0, reason);
-        displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().gameStopped(), 0, reason);
-        displayService.sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0, reason);
+        displayService.broadcastMessages(arena, arena.settings().messages().gameStopped(), 0,
+            reason);
+        displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().gameStopped(), 0,
+            reason);
+        displayService.sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0,
+            reason);
         displayService.playConfiguredSound(arena, arena.settings().sounds().gameStopped());
         playerEnvironmentService.setArenaPlayersGameMode(arena, GameMode.SPECTATOR);
         itemService.clearArenaPlayerInventories(arena);
@@ -188,7 +194,11 @@ public final class ArenaController implements ArenaLifecycleControl {
         displayService.clearScoreboards(arena);
         ArenaGameResult result = gameResult(arena, reason);
         arena.listener().onGameEnded(arena.handle(), result);
-        displayService.broadcastFinalTeamRanking(arena, tabDisplayService.gameName());        Bukkit.getScheduler().runTaskLater(plugin, () -> finishStoppedArena(arena, future),
+        if (statsService != null) {
+          statsService.recordGameResult(result);
+        }
+        displayService.broadcastFinalTeamRanking(arena, tabDisplayService.gameName());
+        Bukkit.getScheduler().runTaskLater(plugin, () -> finishStoppedArena(arena, future),
             POST_GAME_RETURN_DELAY_TICKS);
       } catch (RuntimeException exception) {
         future.completeExceptionally(exception);
@@ -394,9 +404,10 @@ public final class ArenaController implements ArenaLifecycleControl {
         }
         displayService.sendCountdownTitle(arena, secondsLeft);
         displayService.playCountdownSound(arena, secondsLeft);
-        displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().countdownTick(), secondsLeft,
-            null);
-        displayService.sendConfiguredTitle(arena, arena.settings().title().countdownTick(), secondsLeft, null);
+        displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().countdownTick(),
+            secondsLeft, null);
+        displayService.sendConfiguredTitle(arena, arena.settings().title().countdownTick(),
+            secondsLeft, null);
         displayService.playConfiguredSound(arena, arena.settings().sounds().countdownTick());
         if (secondsLeft <= 0) {
           cancel();
@@ -420,7 +431,8 @@ public final class ArenaController implements ArenaLifecycleControl {
     displayService.applyBossBar(arena, 0);
     arena.listener().onGameStarted(arena.handle());
     displayService.broadcastMessages(arena, arena.settings().messages().gameStarted(), 0, null);
-    displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().gameStarted(), 0, null);
+    displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().gameStarted(), 0,
+        null);
     displayService.sendConfiguredTitle(arena, arena.settings().title().gameStarted(), 0, null);
     displayService.playConfiguredSound(arena, arena.settings().sounds().gameStarted());
     future.complete(null);

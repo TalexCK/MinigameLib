@@ -2,6 +2,8 @@ package com.talexck.minigamelib.core.lobby;
 
 import com.talexck.minigamelib.api.lobby.LobbyService;
 import com.talexck.minigamelib.api.lobby.LobbySettings;
+import com.talexck.minigamelib.api.stats.StatsService;
+import com.talexck.minigamelib.api.stats.StoredPlayerStats;
 import me.neznamy.tab.api.TabAPI;
 import me.neznamy.tab.api.TabPlayer;
 import org.bukkit.Bukkit;
@@ -23,18 +25,26 @@ import org.bukkit.scheduler.BukkitTask;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class DefaultLobbyService implements LobbyService, Listener {
 
+  private static final long STATS_REFRESH_INTERVAL_MILLIS = 5_000L;
+
   private final JavaPlugin plugin;
+  private final StatsService stats;
   private LobbySettings settings;
   private BukkitTask hungerTask;
   private final Map<UUID, String> tabScoreboardNames = new ConcurrentHashMap<>();
+  private final Map<UUID, StoredPlayerStats> statsCache = new ConcurrentHashMap<>();
+  private final Map<UUID, Long> statsRefreshAt = new ConcurrentHashMap<>();
+  private final Set<UUID> pendingStatsRequests = ConcurrentHashMap.newKeySet();
 
-  public DefaultLobbyService(JavaPlugin plugin) {
+  public DefaultLobbyService(JavaPlugin plugin, StatsService stats) {
     this.plugin = plugin;
+    this.stats = stats;
     Bukkit.getPluginManager().registerEvents(this, plugin);
     this.hungerTask = new BukkitRunnable() {
       @Override
@@ -126,7 +136,11 @@ public final class DefaultLobbyService implements LobbyService, Listener {
 
   @EventHandler
   public void onQuit(PlayerQuitEvent event) {
-    removeLobbyScoreboard(event.getPlayer().getUniqueId());
+    UUID playerId = event.getPlayer().getUniqueId();
+    removeLobbyScoreboard(playerId);
+    statsCache.remove(playerId);
+    statsRefreshAt.remove(playerId);
+    pendingStatsRequests.remove(playerId);
   }
 
   public void shutdown() {
@@ -153,6 +167,7 @@ public final class DefaultLobbyService implements LobbyService, Listener {
         || settings.scoreboardLines().isEmpty()) {
       return;
     }
+    refreshStats(player);
     try {
       me.neznamy.tab.api.scoreboard.ScoreboardManager manager =
           TabAPI.getInstance().getScoreboardManager();
@@ -211,10 +226,50 @@ public final class DefaultLobbyService implements LobbyService, Listener {
     }
   }
 
+  private void refreshStats(Player player) {
+    if (stats == null || !stats.isAvailable()) {
+      return;
+    }
+    UUID playerId = player.getUniqueId();
+    String playerName = player.getName();
+    long now = System.currentTimeMillis();
+    long refreshedAt = statsRefreshAt.getOrDefault(playerId, 0L);
+    if (now - refreshedAt < STATS_REFRESH_INTERVAL_MILLIS
+        || !pendingStatsRequests.add(playerId)) {
+      return;
+    }
+    stats.playerStats(playerId).whenComplete((storedStats, exception) -> {
+      pendingStatsRequests.remove(playerId);
+      if (exception != null) {
+        plugin.getLogger().fine("Failed to load lobby stats for " + playerName
+            + ": " + exception.getMessage());
+        return;
+      }
+      statsRefreshAt.put(playerId, System.currentTimeMillis());
+      storedStats.ifPresentOrElse(
+          value -> statsCache.put(playerId, value),
+          () -> statsCache.put(playerId, new StoredPlayerStats(playerId, playerName, 0, 0, 0)));
+      Bukkit.getScheduler().runTask(plugin, () -> {
+        Player online = Bukkit.getPlayer(playerId);
+        if (online != null && isLobbyPlayer(online)) {
+          applyLobbyScoreboard(online);
+        }
+      });
+    });
+  }
+
   private String render(Player player, String text) {
+    StoredPlayerStats playerStats = statsCache.getOrDefault(player.getUniqueId(),
+        new StoredPlayerStats(player.getUniqueId(), player.getName(), 0, 0, 0));
     return text.replace("{player}", player.getName())
         .replace("{world}", player.getWorld().getName())
-        .replace("{online}", Integer.toString(Bukkit.getOnlinePlayers().size()));
+        .replace("{online}", Integer.toString(Bukkit.getOnlinePlayers().size()))
+        .replace("{kills}", Integer.toString(playerStats.kills()))
+        .replace("{wins}", Integer.toString(playerStats.wins()))
+        .replace("{experience}", Integer.toString(playerStats.experience()))
+        .replace("{exp}", Integer.toString(playerStats.experience()))
+        .replace("{points}", Integer.toString(playerStats.experience()))
+        .replace("{score}", Integer.toString(playerStats.experience()));
   }
 
   private String color(String text) {

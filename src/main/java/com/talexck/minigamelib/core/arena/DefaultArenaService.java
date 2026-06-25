@@ -7,6 +7,7 @@ import com.talexck.minigamelib.api.arena.ArenaSound;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import com.talexck.minigamelib.api.arena.ArenaTemplate;
+import com.talexck.minigamelib.api.stats.StatsService;
 import com.talexck.minigamelib.core.world.DefaultWorldService;
 import org.bukkit.plugin.java.JavaPlugin;
 
@@ -18,8 +19,9 @@ public final class DefaultArenaService implements ArenaService {
 
   private final ArenaController controller;
 
-  public DefaultArenaService(JavaPlugin plugin, DefaultWorldService worldService) {
-    this.controller = new ArenaController(plugin, worldService);
+  public DefaultArenaService(JavaPlugin plugin, DefaultWorldService worldService,
+      StatsService statsService) {
+    this.controller = new ArenaController(plugin, worldService, statsService);
   }
 
   @Override
