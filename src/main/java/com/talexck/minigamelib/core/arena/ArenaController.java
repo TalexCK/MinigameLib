@@ -16,6 +16,7 @@ import com.talexck.minigamelib.api.arena.ArenaTemplate;
 import com.talexck.minigamelib.api.stats.StatsService;
 import com.talexck.minigamelib.api.arena.ArenaTitleFrame;
 import com.talexck.minigamelib.core.chest.DefaultChestService;
+import com.talexck.minigamelib.core.lang.LanguageService;
 import com.talexck.minigamelib.core.resourcepack.ResourcePackService;
 import com.talexck.minigamelib.core.world.DefaultWorldService;
 import com.talexck.minigamelib.core.world.WorldCreateRequest;
@@ -24,6 +25,7 @@ import org.bukkit.GameMode;
 import org.bukkit.GameRules;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.util.List;
 import java.util.Objects;
@@ -33,8 +35,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 public final class ArenaController implements ArenaLifecycleControl {
-
-  private static final long POST_GAME_RETURN_DELAY_TICKS = 20L * 15L;
 
   private final JavaPlugin plugin;
   private final DefaultWorldService worldService;
@@ -54,21 +54,41 @@ public final class ArenaController implements ArenaLifecycleControl {
   private final StatsService statsService;
 
   public ArenaController(JavaPlugin plugin, DefaultWorldService worldService,
-      StatsService statsService) {
+      StatsService statsService, LanguageService language) {
     this.plugin = plugin;
     this.worldService = worldService;
     this.statsService = statsService;
+    TeamPalette.setNameResolver(color ->
+        language.text("team." + color.name().toLowerCase(java.util.Locale.ROOT)));
     this.chestService = new DefaultChestService(plugin);
     this.resourcePackService = new ResourcePackService(plugin);
     this.lootService = new LootService(chestService);
     this.itemService = new ItemService(plugin, registry);
-    this.tabDisplayService = new TabDisplayService(plugin, registry);
-    this.displayService = new DisplayService(tabDisplayService);
+    this.tabDisplayService = new TabDisplayService(plugin, registry, language);
+    this.displayService = new DisplayService(tabDisplayService, language);
     this.combatService = new CombatService(plugin, registry, displayService, this);
-    this.boundaryService = new BoundaryService(plugin, registry, chestService, combatService);
+    this.boundaryService =
+        new BoundaryService(plugin, registry, chestService, combatService, language);
+    this.displayService.setBoundaryStatus(boundaryService::statusText);
     this.itemCombatService = new ItemCombatService(plugin, registry, itemService, combatService);
-    this.playerEnvironmentService = new PlayerEnvironmentService(plugin, spawnCageService,
-        displayService, tabDisplayService, resourcePackService, this::allKnownSettings);
+    this.playerEnvironmentService = new PlayerEnvironmentService(plugin, registry,
+        spawnCageService, displayService, tabDisplayService, resourcePackService,
+        this::allKnownSettings);
+  }
+
+  /** Hook run for each player sent back to the return point after a game. */
+  public void setReturnHandler(java.util.function.Consumer<org.bukkit.entity.Player> handler) {
+    playerEnvironmentService.setReturnHandler(handler);
+  }
+
+  /** Whether the player takes part in an arena that is counting down or running. */
+  public boolean isPlaying(org.bukkit.entity.Player player) {
+    return playerEnvironmentService.isPlaying(player);
+  }
+
+  /** Whether the player belongs to any arena that has not been destroyed yet. */
+  public boolean isInArena(String playerName) {
+    return registry.isInActiveArena(playerName);
   }
 
   private java.util.List<ArenaSettings> allKnownSettings() {
@@ -155,6 +175,13 @@ public final class ArenaController implements ArenaLifecycleControl {
         displayService.playConfiguredSound(arena, arena.settings().sounds().teleport());
         playerEnvironmentService.teleportPlayersToSpawn(arena);
         itemService.giveBeginningItems(arena);
+        // Anyone who went offline between matchmaking and start forfeits, or the game could never
+        // end.
+        for (String playerName : arena.playerNames()) {
+          if (Bukkit.getPlayerExact(playerName) == null) {
+            arena.markFailedWithoutDeath(playerName);
+          }
+        }
         startCountdown(arena, future);
       } catch (RuntimeException exception) {
         future.completeExceptionally(exception);
@@ -175,14 +202,31 @@ public final class ArenaController implements ArenaLifecycleControl {
           future.complete(null);
           return;
         }
+        boolean wasRunning = arena.status() == ArenaStatus.RUNNING;
+        if (reason == ArenaStopReason.TIME_UP && arena.winningTeam() == null) {
+          arena.finalTeamRanking().stream().findFirst()
+              .filter(color -> !arena.isTeamFailed(color))
+              .ifPresent(arena::setWinningTeam);
+        }
         arena.setStatus(ArenaStatus.STOPPING);
+        if (reason.finishedNaturally()) {
+          arena.awardPlacementScores();
+        }
         arena.listener().onGameStopped(arena.handle(), reason);
+        if (reason == ArenaStopReason.TIME_UP) {
+          displayService.broadcastMessage(arena,
+              arena.settings().presentation().timeUpMessage(), 0, reason);
+        }
         displayService.broadcastMessages(arena, arena.settings().messages().gameStopped(), 0,
             reason);
         displayService.sendConfiguredActionBar(arena, arena.settings().actionBar().gameStopped(), 0,
             reason);
-        displayService.sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0,
-            reason);
+        if (wasRunning && reason.finishedNaturally()) {
+          sendVictoryFeedback(arena);
+        } else {
+          displayService.sendConfiguredTitle(arena, arena.settings().title().gameStopped(), 0,
+              reason);
+        }
         displayService.playConfiguredSound(arena, arena.settings().sounds().gameStopped());
         playerEnvironmentService.setArenaPlayersGameMode(arena, GameMode.SPECTATOR);
         itemService.clearArenaPlayerInventories(arena);
@@ -191,15 +235,20 @@ public final class ArenaController implements ArenaLifecycleControl {
         boundaryService.cancelTasks(arena);
         boundaryService.remove(arenaId);
         displayService.clearBossBar(arena);
-        displayService.clearScoreboards(arena);
+        // Keep the final sidebar/tablist visible during the post-game screen; they are reset
+        // when players are sent back.
+        displayService.applyScoreboards(arena, 0);
         ArenaGameResult result = gameResult(arena, reason);
         arena.listener().onGameEnded(arena.handle(), result);
         if (statsService != null) {
           statsService.recordGameResult(result);
         }
-        displayService.broadcastFinalTeamRanking(arena, tabDisplayService.gameName());
+        if (wasRunning) {
+          displayService.broadcastFinalTeamRanking(arena);
+        }
+        long returnDelay = wasRunning ? 20L * arena.settings().rules().postGameSeconds() : 1L;
         Bukkit.getScheduler().runTaskLater(plugin, () -> finishStoppedArena(arena, future),
-            POST_GAME_RETURN_DELAY_TICKS);
+            Math.max(1L, returnDelay));
       } catch (RuntimeException exception) {
         future.completeExceptionally(exception);
       }
@@ -320,7 +369,18 @@ public final class ArenaController implements ArenaLifecycleControl {
         boundaryService.remove(arenaId);
         spawnCageService.clear(arena.arenaId());
         displayService.clearBossBar(arena);
-        worldService.unloadWorld(arena.world().world(), arena.settings().saveWorldOnUnload());
+        displayService.clearScoreboards(arena);
+        try {
+          playerEnvironmentService.teleportPlayersBack(arena);
+        } catch (RuntimeException exception) {
+          plugin.getLogger().warning("Could not return players of " + arenaId + ": "
+              + exception.getMessage());
+        }
+        boolean unloaded =
+            worldService.unloadWorld(arena.world().world(), arena.settings().saveWorldOnUnload());
+        if (unloaded) {
+          worldService.deleteRuntimeWorldNow(arena.world());
+        }
         arena.setStatus(ArenaStatus.DESTROYED);
       }
     }
@@ -344,13 +404,14 @@ public final class ArenaController implements ArenaLifecycleControl {
         future.complete(null);
         return;
       }
+      displayService.clearBossBar(arena);
+      displayService.clearScoreboards(arena);
       playerEnvironmentService.teleportPlayersBack(arena);
+      playerEnvironmentService.evacuateWorld(arena);
       chestService.stopArenaChests(arena.arenaId(), true);
       boundaryService.cancelTasks(arena);
       boundaryService.remove(arena.arenaId());
       spawnCageService.clear(arena.arenaId());
-      displayService.clearBossBar(arena);
-      displayService.clearScoreboards(arena);
       arena.setStatus(ArenaStatus.STOPPED);
       registry.remove(arena.arenaId(), arena);
       boolean unloaded = worldService.unloadWorld(arena.world().world(), false);
@@ -363,7 +424,7 @@ public final class ArenaController implements ArenaLifecycleControl {
         future.complete(null);
         return;
       }
-      worldService.deleteWorldDirectory(arena.world().runtimeWorldName())
+      worldService.deleteRuntimeWorld(arena.world())
           .whenComplete((deleted, exception) -> {
             if (exception != null) {
               plugin.getLogger().warning("Runtime world delete failed: "
@@ -395,7 +456,7 @@ public final class ArenaController implements ArenaLifecycleControl {
           future.completeExceptionally(new IllegalStateException("Arena countdown interrupted"));
           return;
         }
-        displayService.applyScoreboards(arena, secondsLeft);
+        displayService.tickScoreboards(arena, secondsLeft);
         displayService.applyBossBar(arena, secondsLeft);
         arena.listener().onCountdownTick(arena.handle(), secondsLeft);
         String countdownMessage = arena.settings().messages().countdownTick();
@@ -435,7 +496,74 @@ public final class ArenaController implements ArenaLifecycleControl {
         null);
     displayService.sendConfiguredTitle(arena, arena.settings().title().gameStarted(), 0, null);
     displayService.playConfiguredSound(arena, arena.settings().sounds().gameStarted());
+    startGameClock(arena);
     future.complete(null);
+    // Somebody may have left during the countdown and handed the game to one team already.
+    combatService.checkVictory(arena);
+  }
+
+  /** One-second heartbeat: HUD refresh and the round time limit. */
+  private void startGameClock(RuntimeArena arena) {
+    BukkitTask task = new BukkitRunnable() {
+      @Override
+      public void run() {
+        if (arena.status() != ArenaStatus.RUNNING) {
+          cancel();
+          return;
+        }
+        if (arena.settings().rules().hasTimeLimit()
+            && arena.secondsLeft(System.currentTimeMillis()) <= 0L) {
+          cancel();
+          stopArena(arena.arenaId(), ArenaStopReason.TIME_UP);
+          return;
+        }
+        long secondsLeft = arena.secondsLeft(System.currentTimeMillis());
+        if (secondsLeft > 0 && secondsLeft <= 10) {
+          displayService.playSound(arena, com.talexck.minigamelib.api.arena.ArenaSound.minecraft(
+              org.bukkit.Sound.BLOCK_NOTE_BLOCK_HAT, 0.8f, 1.5f));
+        }
+        displayService.tickScoreboards(arena, 0);
+        displayService.applyBossBar(arena, 0);
+      }
+    }.runTaskTimer(plugin, 20L, 20L);
+    arena.boundaryTasks().add(task);
+  }
+
+  private void sendVictoryFeedback(RuntimeArena arena) {
+    com.talexck.minigamelib.api.arena.ArenaPresentation presentation =
+        arena.settings().presentation();
+    ArenaTeamColor winner = arena.winningTeam();
+    for (String playerName : arena.playerNames()) {
+      org.bukkit.entity.Player player = Bukkit.getPlayerExact(playerName);
+      if (player == null) {
+        continue;
+      }
+      boolean won = winner != null && arena.teamOf(playerName).map(winner::equals).orElse(false);
+      displayService.showTitle(player, arena,
+          won ? presentation.victoryTitle() : presentation.defeatTitle(),
+          won ? presentation.victorySubtitle() : presentation.defeatSubtitle(),
+          java.util.Map.of(), java.time.Duration.ofMillis(200), java.time.Duration.ofSeconds(4),
+          java.time.Duration.ofMillis(800));
+      player.playSound(player.getLocation(), won ? org.bukkit.Sound.UI_TOAST_CHALLENGE_COMPLETE
+          : org.bukkit.Sound.ENTITY_WITHER_DEATH, won ? 1.0f : 0.4f, 1.0f);
+      if (won && !arena.isFailed(playerName)) {
+        launchFirework(player.getLocation(), winner);
+      }
+    }
+  }
+
+  private void launchFirework(org.bukkit.Location location, ArenaTeamColor color) {
+    org.bukkit.entity.Firework firework = location.getWorld().spawn(location.clone().add(0, 1, 0),
+        org.bukkit.entity.Firework.class, spawned -> {
+          org.bukkit.inventory.meta.FireworkMeta meta = spawned.getFireworkMeta();
+          meta.addEffect(org.bukkit.FireworkEffect.builder()
+              .with(org.bukkit.FireworkEffect.Type.BALL_LARGE)
+              .withColor(TeamPalette.leather(color)).withFade(org.bukkit.Color.WHITE)
+              .trail(true).flicker(true).build());
+          meta.setPower(1);
+          spawned.setFireworkMeta(meta);
+        });
+    firework.setPersistent(false);
   }
 
   private List<ArenaTeam> resolveTeams(ArenaCreateRequest request) {
@@ -446,7 +574,7 @@ public final class ArenaController implements ArenaLifecycleControl {
     List<ArenaTeamColor> configuredColors =
         layout.teamSpawns().stream().map(ArenaTeamSpawn::color).distinct().toList();
     return TeamDistribution.resolveTeams(request.initialPlayerNames(), configuredColors,
-        settings.maxTeamSize());
+        settings.maxTeamSize(), settings.rules().teamFillMode());
   }
 
   private ArenaGameResult gameResult(RuntimeArena arena, ArenaStopReason reason) {

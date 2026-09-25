@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
+import com.talexck.minigamelib.api.arena.ArenaTeamFillMode;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -83,5 +84,42 @@ class TeamDistributionTest {
   @Test
   void emptyPlayerListProducesNoTeams() {
     assertTrue(TeamDistribution.resolveTeams(List.of(), List.of(), 0).isEmpty());
+  }
+
+  @Test
+  void fillModeOpensOnlyTheTeamsNeededForTheCap() {
+    List<String> players = List.of("a", "b", "c", "d", "e", "f", "g", "h");
+    List<ArenaTeam> teams = TeamDistribution.resolveTeams(players, List.of(), 4,
+        ArenaTeamFillMode.FILL);
+
+    // Quads with 8 players must produce 2 full teams, not 8 teams of one.
+    assertEquals(2, teams.size());
+    assertTrue(teams.stream().allMatch(team -> team.playerNames().size() == 4));
+  }
+
+  @Test
+  void fillModeBalancesUnevenCounts() {
+    List<String> players = List.of("a", "b", "c", "d", "e", "f", "g", "h", "i");
+    List<ArenaTeam> teams = TeamDistribution.resolveTeams(players, List.of(), 4,
+        ArenaTeamFillMode.FILL);
+
+    assertEquals(3, teams.size());
+    assertTrue(teams.stream().allMatch(team -> team.playerNames().size() == 3));
+  }
+
+  @Test
+  void fillModeAlwaysUsesTwoTeamsForSmallGroups() {
+    List<ArenaTeam> teams = TeamDistribution.resolveTeams(List.of("a", "b", "c"), List.of(), 4,
+        ArenaTeamFillMode.FILL);
+
+    assertEquals(2, teams.size());
+  }
+
+  @Test
+  void fillModeWithSoloTeamsGivesEveryPlayerATeam() {
+    List<ArenaTeam> teams = TeamDistribution.resolveTeams(List.of("a", "b", "c", "d", "e"),
+        List.of(), 1, ArenaTeamFillMode.FILL);
+
+    assertEquals(5, teams.size());
   }
 }

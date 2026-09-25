@@ -66,6 +66,29 @@ public final class WorldDirectoryRepository {
     }
   }
 
+  /**
+   * Deletes a world folder the server moved a runtime world into. Only folders inside the world
+   * container whose name matches the runtime world are touched.
+   */
+  public boolean deleteMigratedWorld(Path worldPath, String runtimeWorldName) {
+    Path normalizedContainer = worldContainer.toAbsolutePath().normalize();
+    Path target = worldPath.toAbsolutePath().normalize();
+    if (target.equals(normalizedContainer) || !target.startsWith(normalizedContainer)
+        || target.getFileName() == null
+        || !target.getFileName().toString().equalsIgnoreCase(runtimeWorldName)
+        || !Files.exists(target)) {
+      return false;
+    }
+    try (var stream = Files.walk(target)) {
+      for (Path path : stream.sorted(Comparator.reverseOrder()).toList()) {
+        Files.deleteIfExists(path);
+      }
+      return true;
+    } catch (IOException exception) {
+      throw new IllegalStateException("Failed to delete world: " + target, exception);
+    }
+  }
+
   private void copyDirectory(Path source, Path target) throws IOException {
     try (var stream = Files.walk(source)) {
       for (Path sourcePath : stream.toList()) {

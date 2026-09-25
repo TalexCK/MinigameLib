@@ -14,4 +14,7 @@ public interface LobbyService {
 
   void teleportToSpawn(Player player);
 
+  /** Resets a player that just entered the lobby: food, hotbar items, scoreboard, game mode. */
+  void prepare(Player player);
+
 }

@@ -3,6 +3,7 @@ package com.talexck.minigamelib.core.arena;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
+import com.talexck.minigamelib.api.arena.ArenaTeamFillMode;
 import com.talexck.minigamelib.api.arena.ArenaTeamSpawn;
 
 import java.util.ArrayList;
@@ -35,13 +36,31 @@ final class TeamDistribution {
    */
   static List<ArenaTeam> resolveTeams(List<String> playerNames,
       List<ArenaTeamColor> configuredColors, int maxTeamSize) {
+    return resolveTeams(playerNames, configuredColors, maxTeamSize, ArenaTeamFillMode.SPREAD);
+  }
+
+  /**
+   * Distributes players across teams.
+   *
+   * <p>{@link ArenaTeamFillMode#SPREAD} behaves like {@link #resolveTeams(List, List, int)}.
+   * {@link ArenaTeamFillMode#FILL} opens only as many teams as needed to respect
+   * {@code maxTeamSize} (minimum two teams when at least two players are present), then balances
+   * players round-robin so team sizes differ by at most one. Players that do not fit because all
+   * colors are full are still assigned round-robin so nobody is dropped.
+   */
+  static List<ArenaTeam> resolveTeams(List<String> playerNames,
+      List<ArenaTeamColor> configuredColors, int maxTeamSize, ArenaTeamFillMode fillMode) {
     if (playerNames.isEmpty()) {
       return List.of();
     }
     ArenaTeamColor[] colors = configuredColors.isEmpty() ? ArenaTeamColor.values()
         : configuredColors.toArray(ArenaTeamColor[]::new);
     int teamCount = Math.min(playerNames.size(), colors.length);
-    if (maxTeamSize > 0) {
+    if (fillMode == ArenaTeamFillMode.FILL && maxTeamSize > 0) {
+      int needed = (playerNames.size() + maxTeamSize - 1) / maxTeamSize;
+      int minimum = playerNames.size() >= 2 ? 2 : 1;
+      teamCount = Math.min(colors.length, Math.max(minimum, needed));
+    } else if (maxTeamSize > 0) {
       int neededForCap = (playerNames.size() + maxTeamSize - 1) / maxTeamSize;
       teamCount = Math.min(colors.length, Math.max(teamCount, neededForCap));
     }

@@ -1,10 +1,11 @@
 name: MinigameLib
-version: '0.1.0'
+version: '${project.version}'
 main: com.talexck.minigamelib.MinigameLibPlugin
 api-version: '1.21'
-description: A Paper 1.21.11 minigame library plugin.
+description: Reusable minigame framework for Paper 1.21.11 - 26.x (arenas, teams, queues, borders, loot, TAB UI).
 authors:
   - TalexCK
 depend:
   - TAB
+softdepend:
   - DecentHolograms

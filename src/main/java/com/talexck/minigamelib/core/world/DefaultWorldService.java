@@ -35,6 +35,14 @@ public final class DefaultWorldService {
     return controller.deleteWorldDirectory(worldName);
   }
 
+  public CompletableFuture<Boolean> deleteRuntimeWorld(RuntimeWorld runtimeWorld) {
+    return controller.deleteRuntimeWorld(runtimeWorld);
+  }
+
+  public void deleteRuntimeWorldNow(RuntimeWorld runtimeWorld) {
+    controller.deleteRuntimeWorldNow(runtimeWorld);
+  }
+
   public void shutdown() {
     controller.shutdown();
   }

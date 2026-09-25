@@ -5,7 +5,20 @@ import com.talexck.minigamelib.api.setup.SetupBlockMark;
 import com.talexck.minigamelib.api.setup.SetupBlockMarkListener;
 import com.talexck.minigamelib.api.setup.SetupService;
 import com.talexck.minigamelib.core.lang.LanguageService;
+import org.bukkit.Color;
 import org.bukkit.Location;
+import org.bukkit.World;
+import org.bukkit.entity.BlockDisplay;
+import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
+import org.bukkit.entity.TextDisplay;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.util.Transformation;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import java.util.ArrayList;
+import java.util.List;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.block.Block;
@@ -32,8 +45,11 @@ public final class DefaultSetupService implements SetupService, Listener {
   private final LanguageService language;
   private final NamespacedKey markerToolKey;
   private final Map<UUID, SetupBlockMarkListener> blockMarkListeners = new ConcurrentHashMap<>();
+  private final Map<UUID, Map<String, List<Entity>>> markers = new ConcurrentHashMap<>();
+  private final JavaPlugin plugin;
 
   public DefaultSetupService(JavaPlugin plugin, LanguageService language) {
+    this.plugin = plugin;
     this.language = language;
     this.markerToolKey = new NamespacedKey(plugin, "setup_marker_tool");
     plugin.getServer().getPluginManager().registerEvents(this, plugin);
@@ -51,6 +67,87 @@ public final class DefaultSetupService implements SetupService, Listener {
   public void stopBlockMarker(Player player) {
     Objects.requireNonNull(player, "player");
     blockMarkListeners.remove(player.getUniqueId());
+    clearMarkers(player);
+    for (ItemStack stack : player.getInventory().getContents()) {
+      if (isMarkerAxe(stack)) {
+        player.getInventory().remove(stack);
+      }
+    }
+  }
+
+  @Override
+  public void showMarker(Player player, Location block, String label, Color color) {
+    removeMarker(player, block);
+    World world = block.getWorld();
+    Location base = block.getBlock().getLocation();
+    List<Entity> spawned = new ArrayList<>();
+    BlockDisplay outline = world.spawn(base, BlockDisplay.class, display -> {
+      display.setBlock(Material.GLASS.createBlockData());
+      display.setTransformation(new Transformation(new Vector3f(-0.01f, -0.01f, -0.01f),
+          new AxisAngle4f(), new Vector3f(1.02f, 1.02f, 1.02f), new AxisAngle4f()));
+      display.setGlowing(true);
+      display.setGlowColorOverride(color);
+      configurePrivate(display);
+    });
+    spawned.add(outline);
+    if (label != null && !label.isBlank()) {
+      TextDisplay text = world.spawn(base.clone().add(0.5, 1.6, 0.5), TextDisplay.class, display -> {
+        display.text(LegacyComponentSerializer.legacyAmpersand().deserialize(label));
+        display.setBillboard(Display.Billboard.CENTER);
+        display.setSeeThrough(true);
+        display.setShadowed(true);
+        configurePrivate(display);
+      });
+      spawned.add(text);
+    }
+    spawned.forEach(entity -> player.showEntity(plugin, entity));
+    markers.computeIfAbsent(player.getUniqueId(), ignored -> new ConcurrentHashMap<>())
+        .put(key(base), spawned);
+  }
+
+  private void configurePrivate(Entity entity) {
+    entity.setPersistent(false);
+    entity.setVisibleByDefault(false);
+  }
+
+  @Override
+  public void removeMarker(Player player, Location block) {
+    Map<String, List<Entity>> playerMarkers = markers.get(player.getUniqueId());
+    if (playerMarkers == null) {
+      return;
+    }
+    List<Entity> removed = playerMarkers.remove(key(block.getBlock().getLocation()));
+    if (removed != null) {
+      removed.forEach(Entity::remove);
+    }
+  }
+
+  @Override
+  public void clearMarkers(Player player) {
+    Map<String, List<Entity>> playerMarkers = markers.remove(player.getUniqueId());
+    if (playerMarkers != null) {
+      playerMarkers.values().forEach(list -> list.forEach(Entity::remove));
+    }
+  }
+
+  private String key(Location location) {
+    return location.getWorld().getUID() + ":" + location.getBlockX() + ":" + location.getBlockY()
+        + ":" + location.getBlockZ();
+  }
+
+  /** Creative players would otherwise break the block they are trying to mark. */
+  @EventHandler(ignoreCancelled = true)
+  public void onBlockBreak(org.bukkit.event.block.BlockBreakEvent event) {
+    if (blockMarkListeners.containsKey(event.getPlayer().getUniqueId())
+        && isMarkerAxe(event.getPlayer().getInventory().getItemInMainHand())) {
+      event.setCancelled(true);
+    }
+  }
+
+  @EventHandler
+  public void onQuit(PlayerQuitEvent event) {
+    blockMarkListeners.remove(event.getPlayer().getUniqueId());
+    clearMarkers(event.getPlayer());
   }
 
   @Override
@@ -62,6 +159,8 @@ public final class DefaultSetupService implements SetupService, Listener {
   public void shutdown() {
     HandlerList.unregisterAll(this);
     blockMarkListeners.clear();
+    markers.values().forEach(map -> map.values().forEach(list -> list.forEach(Entity::remove)));
+    markers.clear();
   }
 
   @EventHandler

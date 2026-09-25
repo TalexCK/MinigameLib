@@ -21,7 +21,23 @@ public record ArenaSettings(
     ArenaVerticalBoundary verticalBoundary,
     List<ArenaBoundaryStage> boundaryStages,
     ArenaVictoryCondition victoryCondition,
-    ArenaMessages messages) {
+    ArenaMessages messages,
+    ArenaRules rules,
+    ArenaPresentation presentation) {
+
+  public ArenaSettings(int countdownSeconds, int maxTeamSize, String returnWorldName,
+      ArenaPoint returnPoint, boolean saveWorldOnUnload, ArenaScoreboardConfig scoreboard,
+      ArenaBossBarConfig bossBar, ArenaActionBarConfig actionBar, ArenaTitleConfig title,
+      ArenaSoundConfig sounds, ArenaResourcePackConfig resourcePack,
+      List<ArenaItemEntry> beginningItems, List<ArenaLootChest> lootChests,
+      ArenaBoundaryWall initialBoundaryWall, ArenaVerticalBoundary verticalBoundary,
+      List<ArenaBoundaryStage> boundaryStages, ArenaVictoryCondition victoryCondition,
+      ArenaMessages messages) {
+    this(countdownSeconds, maxTeamSize, returnWorldName, returnPoint, saveWorldOnUnload, scoreboard,
+        bossBar, actionBar, title, sounds, resourcePack, beginningItems, lootChests,
+        initialBoundaryWall, verticalBoundary, boundaryStages, victoryCondition, messages,
+        ArenaRules.defaults(), null);
+  }
 
   public ArenaSettings(int countdownSeconds, int maxTeamSize, String returnWorldName,
       ArenaPoint returnPoint, boolean saveWorldOnUnload, ArenaScoreboardConfig scoreboard,
@@ -34,7 +50,7 @@ public record ArenaSettings(
         bossBar, actionBar, title, sounds, resourcePack, beginningItems, lootChests,
         initialBoundaryWall,
         new ArenaVerticalBoundary(ArenaVerticalBoundary.DISABLED, ArenaVerticalBoundary.DISABLED),
-        boundaryStages, victoryCondition, messages);
+        boundaryStages, victoryCondition, messages, ArenaRules.defaults(), null);
   }
 
   public ArenaSettings {
@@ -70,6 +86,12 @@ public record ArenaSettings(
     if (verticalBoundary == null) {
       verticalBoundary = new ArenaVerticalBoundary(ArenaVerticalBoundary.DISABLED,
           ArenaVerticalBoundary.DISABLED);
+    }
+    if (rules == null) {
+      rules = ArenaRules.defaults();
+    }
+    if (presentation == null) {
+      presentation = ArenaPresentation.named("Minigame");
     }
     if (countdownSeconds < 0) {
       throw new IllegalArgumentException("countdownSeconds cannot be negative");

@@ -1,6 +1,6 @@
 # MinigameLib API 文档
 
-MinigameLib 是 Paper 1.21.11 小游戏基础库。对外暴露 Arena API 和 Setup API，世界复制、运行世界加载、loot chest、边界、UI、声音、材质包等由 MinigameLib 内部执行。
+MinigameLib 是 Paper 小游戏基础库，支持 **Paper 1.21.11 与 26.1 - 26.3**（同一个 jar，默认按 1.21.11 API 编译，`mvn -Ppaper-26 compile` 可用 26.x API 检查）。运行依赖 TAB；DecentHolograms 可选（全息榜单）。对外暴露 Arena API 和 Setup API，世界复制、运行世界加载、loot chest、边界、UI、声音、材质包等由 MinigameLib 内部执行。
 
 **构建**
 
@@ -11,7 +11,7 @@ mvn package
 构建产物位于：
 
 ```text
-target/minigamelib-1.0.0-SNAPSHOT.jar
+target/minigamelib-0.2.0.jar
 ```
 
 **获取 API**
@@ -29,6 +29,9 @@ SetupService setup = lib.setup();
 ```java
 ArenaService arenas();
 SetupService setup();
+LobbyService lobby();
+StatsService stats();
+QueueService queues();
 ```
 
 **SetupService**
@@ -575,21 +578,15 @@ new ArenaMessages(
 Scoreboard、BossBar、ActionBar、Title、Message 支持：
 
 ```text
-{arena}
-{template}
-{world}
-{status}
-{players}
-{aliveTeams}
-{winner}
-{team}
-{kills}
-{deaths}
-{countdown}
-{reason}
+{arena} {template} {world} {status} {game} {mode} {map}
+{players} {alivePlayers} {teams} {aliveTeams} {winner}
+{player} {team} {teamName} {teamColor} {teamAlive} {teamSize} {teamScore}
+{kills} {deaths} {score} {alive}
+{countdown} %seconds% {time_left} {elapsed} {border} {reason}
 ```
 
-`{team}`、`{kills}`、`{deaths}` 会在按玩家渲染的内容里体现当前玩家数据。
+玩家相关占位符（`{team}`、`{kills}`、`{score}` 等）在侧边栏、TAB、标题等按玩家渲染的内容里显示该玩家数据；
+TAB 侧边栏为每个玩家单独创建。
 
 **生命周期监听器**
 
@@ -623,3 +620,51 @@ new ArenaLifecycleListener() {
 - Arena 创建会异步复制世界，Bukkit 主线程操作由 MinigameLib 内部调度。
 - `lootChestPoints` 是兼容点位；完整 loot 应优先使用 `ArenaSettings.lootChests`。
 - `publicUrlBase` 为空时，内置 HTTP URL 可能只适合本地测试，生产服建议配置公网地址。
+
+
+## 0.2.0 新增
+
+**ArenaRules**（`ArenaSettings` 最后两个字段之一，旧构造函数使用 `ArenaRules.defaults()`）
+
+```java
+new ArenaRules(
+    Duration.ofMinutes(5),       // 回合时长，ZERO = 不限时；时间到以 TIME_UP 结束
+    20,                          // 击杀得分
+    2,                           // 每淘汰一名敌人，所有存活玩家得分
+    List.of(160, 130, 105),      // 队伍名次奖励（每名队员）
+    ArenaTeamFillMode.FILL,      // FILL：先填满 maxTeamSize 再开新队；SPREAD：旧行为
+    ArenaBoundaryShape.CIRCLE,   // CIRCLE / RECTANGLE
+    2.0,                         // 边界外每秒伤害
+    10);                         // 结束后停留秒数
+```
+
+**ArenaPresentation**：游戏名、模式名、地图名，以及淘汰标题、击杀 action bar、队伍覆灭广播、
+胜利/失败标题、运行中 Boss 栏、边界收缩提示、出界提示、时间到提示等文本（空字符串表示不显示）。
+
+**QueueService**：大厅匹配队列。
+
+```java
+queues.register(new QueueSettings("mygame-solo", "&eSolo", 2, 8, 30, 10),
+    (queue, players) -> startMyGame(players));
+queues.join(player, "mygame-solo");   // JOINED / SWITCHED / FULL / IN_GAME ...
+queues.forceStart("mygame-solo");
+```
+
+**SetupService 标记**：`showMarker(player, block, label, color)` 显示仅该玩家可见的发光方块和悬浮文字，
+`removeMarker` / `clearMarkers` 清除；`stopBlockMarker` 会一并清除并收回木斧。
+
+**LobbySettings**：新增 `hotbarItems`（进入大厅时放入热键栏且不可丢弃/移动）和 `placeholders`
+（给大厅侧边栏追加占位符）。`LobbyService.prepare(player)` 在玩家回到大厅时自动调用。
+
+**ArenaService**：新增 `findArenaByPlayer(name)`、`isPlaying(player)`。
+
+**物品**：`ArenaItemEntry` 新增 `lore`，名称与 lore 支持 `&` 颜色代码；`ArenaItemFactory.orb(...)` /
+`spark(...)` 创建投掷宝珠与自用火花；`ArenaPotionItemConfig` 新增 `clearNegativeEffects`、
+`affectEachPlayerOnce`、`fuse`（定时引爆）。
+
+**行为修复**：游戏中退出视为淘汰、重连以旁观者回到对局；开局时已离线的玩家直接出局；
+上边界只造成持续伤害；倒计时中禁止伤害与使用物品；关服时先传回玩家再卸载并删除运行世界；
+26.1+ 迁移后的世界目录也会被删除；统计的玩家 UUID 在主线程解析。
+
+**配置** `plugins/MinigameLib/config.yml`：`language`（zh_cn / en_us）、`resource-pack-server.port`、
+`resource-pack-server.public-host`。

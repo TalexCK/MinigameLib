@@ -65,11 +65,33 @@ public final class ArenaItemFactory {
 
   public static ArenaItemEntry item(String name, Material material, int amount, ArenaItemMode mode,
       List<ArenaItemEnchantment> enchantments, boolean igniteTntOnPlace, boolean splitInLoot) {
+    return item(name, material, amount, mode, enchantments, igniteTntOnPlace, splitInLoot,
+        List.of());
+  }
+
+  public static ArenaItemEntry item(String name, Material material, int amount, ArenaItemMode mode,
+      List<ArenaItemEnchantment> enchantments, boolean igniteTntOnPlace, boolean splitInLoot,
+      List<String> lore) {
     ItemStack stack = new ItemStack(material);
     for (ArenaItemEnchantment enchantment : enchantments) {
       stack.addUnsafeEnchantment(resolveEnchantment(enchantment.key()), enchantment.level());
     }
-    return new ArenaItemEntry(name, stack, amount, mode, null, igniteTntOnPlace, splitInLoot);
+    return new ArenaItemEntry(name, stack, amount, mode, null, igniteTntOnPlace, splitInLoot,
+        lore);
+  }
+
+  /** A thrown orb that bursts into an effect cloud where it lands (or when its fuse runs out). */
+  public static ArenaItemEntry orb(String name, Material material, int amount,
+      ArenaPotionItemConfig config, List<String> lore) {
+    return new ArenaItemEntry(name, new ItemStack(material), amount, ArenaItemMode.POTION, config,
+        false, true, lore);
+  }
+
+  /** A consumable that applies its effect to the user on right click. */
+  public static ArenaItemEntry spark(String name, Material material, int amount,
+      ArenaPotionItemConfig config, List<String> lore) {
+    return new ArenaItemEntry(name, new ItemStack(material), amount, ArenaItemMode.SELF_POTION,
+        config, false, true, lore);
   }
 
   private static Enchantment resolveEnchantment(String key) {

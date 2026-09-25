@@ -80,20 +80,17 @@ final class TeamPalette {
     };
   }
 
-  /** Default localized team display name. Games may override via their own text where needed. */
+  private static volatile java.util.function.Function<ArenaTeamColor, String> nameResolver =
+      color -> color.name().charAt(0) + color.name().substring(1).toLowerCase(java.util.Locale.ROOT);
+
+  /** Installs the localized team name lookup (MinigameLib language file). */
+  static void setNameResolver(java.util.function.Function<ArenaTeamColor, String> resolver) {
+    nameResolver = resolver;
+  }
+
+  /** Localized team display name, e.g. "Red" / "红队". */
   static String displayName(ArenaTeamColor color) {
-    return switch (color) {
-      case RED -> "红队";
-      case YELLOW -> "黄队";
-      case GREEN -> "绿队";
-      case BLUE -> "蓝队";
-      case ORANGE -> "橙队";
-      case PURPLE -> "紫队";
-      case WHITE -> "白队";
-      case PINK -> "粉队";
-      case GRAY -> "灰队";
-      case CYAN -> "青队";
-    };
+    return nameResolver.apply(color);
   }
 
   static BarColor tabBarColor(org.bukkit.boss.BarColor color) {

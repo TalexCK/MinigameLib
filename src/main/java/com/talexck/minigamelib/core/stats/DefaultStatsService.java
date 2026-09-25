@@ -2,7 +2,6 @@ package com.talexck.minigamelib.core.stats;
 
 import com.talexck.minigamelib.api.arena.ArenaGameResult;
 import com.talexck.minigamelib.api.arena.ArenaPlayerStats;
-import com.talexck.minigamelib.api.arena.ArenaStopReason;
 import com.talexck.minigamelib.api.arena.ArenaTeamStats;
 import com.talexck.minigamelib.api.stats.LeaderboardEntry;
 import com.talexck.minigamelib.api.stats.LeaderboardType;
@@ -12,8 +11,6 @@ import com.talexck.minigamelib.api.stats.StatsSettings;
 import com.talexck.minigamelib.api.stats.StatsStorageConfig;
 import com.talexck.minigamelib.api.stats.StatsStorageType;
 import com.talexck.minigamelib.api.stats.StoredPlayerStats;
-import eu.decentsoftware.holograms.api.DHAPI;
-import eu.decentsoftware.holograms.api.holograms.Hologram;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.OfflinePlayer;
@@ -46,8 +43,12 @@ public final class DefaultStatsService implements StatsService {
   private BukkitTask refreshTask;
   private volatile boolean available;
 
-  public DefaultStatsService(JavaPlugin plugin) {
+  private final com.talexck.minigamelib.core.lang.LanguageService language;
+
+  public DefaultStatsService(JavaPlugin plugin,
+      com.talexck.minigamelib.core.lang.LanguageService language) {
     this.plugin = plugin;
+    this.language = language;
     this.executor = Executors.newSingleThreadExecutor(task -> {
       Thread thread = new Thread(task, "MinigameLib-Stats");
       thread.setDaemon(true);
@@ -113,9 +114,11 @@ public final class DefaultStatsService implements StatsService {
     if (!available || result == null) {
       return CompletableFuture.completedFuture(null);
     }
+    // Resolve player UUIDs on the calling (main) thread: Bukkit lookups are not thread-safe.
+    List<PlayerStatDelta> deltas = deltas(result);
     return CompletableFuture.runAsync(() -> {
       try {
-        for (PlayerStatDelta delta : deltas(result)) {
+        for (PlayerStatDelta delta : deltas) {
           repository.addPlayerDelta(delta);
         }
       } catch (SQLException exception) {
@@ -131,7 +134,7 @@ public final class DefaultStatsService implements StatsService {
   }
 
   private List<PlayerStatDelta> deltas(ArenaGameResult result) {
-    if (result.reason() != ArenaStopReason.NORMAL) {
+    if (!result.reason().finishedNaturally()) {
       return List.of();
     }
     Set<String> winnerNames = winnerNames(result);
@@ -143,7 +146,7 @@ public final class DefaultStatsService implements StatsService {
   private PlayerStatDelta delta(ArenaPlayerStats stats, Set<String> winnerNames) {
     int kills = Math.max(0, stats.kills());
     int wins = winnerNames.contains(stats.playerName()) ? 1 : 0;
-    int experience = kills * killExperience + wins * winExperience;
+    int experience = kills * killExperience + wins * winExperience + Math.max(0, stats.score());
     return new PlayerStatDelta(playerId(stats.playerName()), stats.playerName(), kills, wins,
         experience);
   }
@@ -291,21 +294,16 @@ public final class DefaultStatsService implements StatsService {
     }
     String name = hologramName(board.type(), board.id());
     List<String> lines = lines(board.type(), entries);
-    Hologram hologram = DHAPI.getHologram(name);
-    if (hologram == null) {
-      DHAPI.createHologram(name, location, false, lines);
-      return;
-    }
-    DHAPI.moveHologram(hologram, location);
-    DHAPI.setHologramLines(hologram, lines);
+    DecentHologramsBridge.render(name, location, lines);
   }
 
   private List<String> lines(LeaderboardType type, List<LeaderboardEntry> entries) {
     List<String> lines = new java.util.ArrayList<>();
-    lines.add("&b&l✦ " + type.displayName() + "总榜 ✦");
-    lines.add("&8Top 10");
+    lines.add(language.text("stats.board-header", "{title}",
+        language.text("stats.board-title-" + type.key())));
+    lines.add(language.text("stats.board-subtitle"));
     if (entries.isEmpty()) {
-      lines.add("&7暂无数据");
+      lines.add(language.text("stats.board-empty"));
       return List.copyOf(lines);
     }
     for (int index = 0; index < Math.min(BOARD_LIMIT, entries.size()); index++) {
@@ -326,7 +324,7 @@ public final class DefaultStatsService implements StatsService {
 
   private void removeHologram(LeaderboardType type, String id) {
     if (Bukkit.getPluginManager().isPluginEnabled("DecentHolograms")) {
-      DHAPI.removeHologram(hologramName(type, id));
+      DecentHologramsBridge.remove(hologramName(type, id));
     }
   }
 

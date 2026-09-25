@@ -9,6 +9,8 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
+import org.bukkit.Sound;
+import com.talexck.minigamelib.api.arena.ArenaStatus;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Snowball;
 import org.bukkit.event.EventHandler;
@@ -25,6 +27,8 @@ import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 
 import java.time.Duration;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -40,6 +44,14 @@ final class ItemCombatService implements Listener {
   private final ArenaRegistry registry;
   private final ItemService items;
   private final CombatService combat;
+  private static final long MAX_FLIGHT_TICKS = 80L;
+  private static final Set<PotionEffectType> NEGATIVE_EFFECTS = Set.of(
+      PotionEffectType.POISON, PotionEffectType.INSTANT_DAMAGE, PotionEffectType.SLOWNESS,
+      PotionEffectType.WEAKNESS, PotionEffectType.WITHER, PotionEffectType.BLINDNESS,
+      PotionEffectType.NAUSEA, PotionEffectType.DARKNESS, PotionEffectType.MINING_FATIGUE,
+      PotionEffectType.HUNGER, PotionEffectType.LEVITATION, PotionEffectType.GLOWING,
+      PotionEffectType.UNLUCK);
+
   private final ConcurrentMap<UUID, ActivePotionProjectile> potionProjectiles =
       new ConcurrentHashMap<>();
 
@@ -64,6 +76,13 @@ final class ItemCombatService implements Listener {
       return;
     }
     ItemStack item = event.getItem();
+    if (arena.status() != ArenaStatus.RUNNING || arena.isFailed(player.getName())) {
+      if (items.findItemEntry(arena, item, ArenaItemMode.SELF_POTION).isPresent()
+          || items.findItemEntry(arena, item, ArenaItemMode.POTION).isPresent()) {
+        event.setCancelled(true);
+      }
+      return;
+    }
     if (item != null && item.getType() == Material.CREEPER_SPAWN_EGG) {
       Location location = event.getClickedBlock() == null ? player.getLocation()
           : event.getClickedBlock().getLocation().add(0.5, 1.0, 0.5);
@@ -92,11 +111,13 @@ final class ItemCombatService implements Listener {
     ItemStack displayStack = projectileDisplayStack(entry);
     Snowball snowball = player.launchProjectile(Snowball.class);
     snowball.setItem(displayStack);
-    snowball.setVelocity(player.getLocation().getDirection().normalize().multiply(1.25));
-    snowball.setGravity(entry.item().getType() == Material.SNOWBALL);
+    snowball.setVelocity(player.getLocation().getDirection().normalize().multiply(1.5));
     snowball.setPersistent(false);
+    player.getWorld().playSound(player.getLocation(), Sound.ENTITY_SNOWBALL_THROW, 1.0f, 0.8f);
     potionProjectiles.put(snowball.getUniqueId(),
         new ActivePotionProjectile(arena.arenaId(), config, player.getName(), entry.name()));
+    long fuseTicks = config.fuse().isZero() ? MAX_FLIGHT_TICKS
+        : Math.max(1L, Math.min(MAX_FLIGHT_TICKS, toTicks(config.fuse())));
     new BukkitRunnable() {
       private int ticks;
 
@@ -108,7 +129,7 @@ final class ItemCombatService implements Listener {
           cancel();
           return;
         }
-        if (ticks >= 80) {
+        if (ticks >= fuseTicks) {
           explodePotionProjectile(snowball);
           cancel();
           return;
@@ -168,21 +189,44 @@ final class ItemCombatService implements Listener {
 
   private void applySelfPotion(Player player, ArenaItemEntry entry) {
     ArenaPotionItemConfig config = entry.potionConfig();
-    player.addPotionEffect(new PotionEffect(config.effectType(),
-        Math.max(1, (int) toTicks(config.effectDuration())), config.amplifier(), true, true, true));
+    applyEffect(player, config, Math.max(1, (int) toTicks(config.effectDuration())));
+    player.getWorld().playSound(player.getLocation(), Sound.ENTITY_FIREWORK_ROCKET_BLAST, 0.8f,
+        1.6f);
+    player.getWorld().spawnParticle(Particle.FIREWORK, player.getLocation().add(0, 1, 0), 20,
+        0.3, 0.5, 0.3, 0.05);
+    player.setCooldown(entry.item().getType(), 10);
+  }
+
+  private void applyEffect(Player player, ArenaPotionItemConfig config, int effectTicks) {
+    if (config.clearNegativeEffects()) {
+      for (PotionEffect effect : java.util.List.copyOf(player.getActivePotionEffects())) {
+        if (NEGATIVE_EFFECTS.contains(effect.getType())) {
+          player.removePotionEffect(effect.getType());
+        }
+      }
+      player.setFireTicks(0);
+    }
+    if (config.effectType() != null) {
+      player.addPotionEffect(new PotionEffect(config.effectType(), effectTicks,
+          config.amplifier(), true, true, true));
+    }
   }
 
   private void startPotionSphere(String arenaId, Location center, ArenaPotionItemConfig config,
       String shooterName, String itemName) {
     long durationTicks = toTicks(config.duration());
     long effectTicks = Math.max(1L, toTicks(config.effectDuration()));
+    Set<String> affected = new HashSet<>();
+    center.getWorld().playSound(center, Sound.ENTITY_SPLASH_POTION_BREAK, 1.0f, 0.9f);
+    center.getWorld().spawnParticle(Particle.FLASH, center, 1);
     new BukkitRunnable() {
       private long elapsedTicks;
 
       @Override
       public void run() {
         RuntimeArena arena = registry.get(arenaId);
-        if (arena == null || elapsedTicks > durationTicks) {
+        if (arena == null || arena.status() != ArenaStatus.RUNNING
+            || elapsedTicks > durationTicks) {
           cancel();
           return;
         }
@@ -190,18 +234,23 @@ final class ItemCombatService implements Listener {
         double radiusSquared = config.radius() * config.radius();
         for (String playerName : arena.playerNames()) {
           Player player = Bukkit.getPlayerExact(playerName);
-          if (player != null && player.getWorld().equals(center.getWorld())
-              && player.getLocation().distanceSquared(center) <= radiusSquared) {
-            if (isOffensiveEffect(config.effectType())) {
-              combat.creditPotionDeath(player.getUniqueId(), shooterName, itemName);
-            }
-            player.addPotionEffect(new PotionEffect(config.effectType(), (int) effectTicks,
-                config.amplifier(), true, true, true));
+          if (player == null || arena.isFailed(playerName)
+              || !player.getWorld().equals(center.getWorld())
+              || player.getLocation().add(0, 1, 0).distanceSquared(center) > radiusSquared) {
+            continue;
           }
+          if (config.affectEachPlayerOnce() && !affected.add(playerName)) {
+            continue;
+          }
+          if (config.effectType() != null && isOffensiveEffect(config.effectType())
+              && !playerName.equals(shooterName)) {
+            combat.creditPotionDeath(player.getUniqueId(), shooterName, itemName);
+          }
+          applyEffect(player, config, (int) effectTicks);
         }
-        elapsedTicks += 20L;
+        elapsedTicks += 10L;
       }
-    }.runTaskTimer(plugin, 0L, 20L);
+    }.runTaskTimer(plugin, 0L, 10L);
   }
 
   private void spawnPotionSphereParticles(Location center, ArenaPotionItemConfig config) {
@@ -228,12 +277,6 @@ final class ItemCombatService implements Listener {
   }
 
   private Particle particleFor(PotionEffectType effectType) {
-    if (effectType == PotionEffectType.INSTANT_DAMAGE) {
-      return Particle.DAMAGE_INDICATOR;
-    }
-    if (effectType == PotionEffectType.POISON) {
-      return Particle.DUST;
-    }
     if (effectType == PotionEffectType.REGENERATION) {
       return Particle.HEART;
     }
@@ -244,14 +287,29 @@ final class ItemCombatService implements Listener {
   }
 
   private Particle.DustOptions dustFor(PotionEffectType effectType) {
+    if (effectType == null) {
+      return new Particle.DustOptions(Color.fromRGB(0xBFF4FF), 1.1f);
+    }
     if (effectType == PotionEffectType.POISON) {
       return new Particle.DustOptions(Color.fromRGB(0x4E9331), 1.15f);
+    }
+    if (effectType == PotionEffectType.INSTANT_DAMAGE) {
+      return new Particle.DustOptions(Color.fromRGB(0xA9153A), 1.2f);
+    }
+    if (effectType == PotionEffectType.SLOWNESS) {
+      return new Particle.DustOptions(Color.fromRGB(0x5A6C81), 1.1f);
+    }
+    if (effectType == PotionEffectType.WEAKNESS) {
+      return new Particle.DustOptions(Color.fromRGB(0x484D48), 1.1f);
+    }
+    if (effectType == PotionEffectType.SPEED) {
+      return new Particle.DustOptions(Color.fromRGB(0x33EBFF), 1.1f);
     }
     return new Particle.DustOptions(Color.WHITE, 1.0f);
   }
 
   private boolean isOffensiveEffect(PotionEffectType effectType) {
-    return effectType == PotionEffectType.INSTANT_DAMAGE || effectType == PotionEffectType.POISON;
+    return NEGATIVE_EFFECTS.contains(effectType);
   }
 
   void shutdown() {

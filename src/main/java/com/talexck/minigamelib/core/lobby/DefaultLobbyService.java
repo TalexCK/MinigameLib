@@ -19,6 +19,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scheduler.BukkitTask;
@@ -42,9 +43,13 @@ public final class DefaultLobbyService implements LobbyService, Listener {
   private final Map<UUID, Long> statsRefreshAt = new ConcurrentHashMap<>();
   private final Set<UUID> pendingStatsRequests = ConcurrentHashMap.newKeySet();
 
-  public DefaultLobbyService(JavaPlugin plugin, StatsService stats) {
+  private final java.util.function.Predicate<Player> playing;
+
+  public DefaultLobbyService(JavaPlugin plugin, StatsService stats,
+      java.util.function.Predicate<Player> playing) {
     this.plugin = plugin;
     this.stats = stats;
+    this.playing = playing;
     Bukkit.getPluginManager().registerEvents(this, plugin);
     this.hungerTask = new BukkitRunnable() {
       @Override
@@ -89,14 +94,69 @@ public final class DefaultLobbyService implements LobbyService, Listener {
       return;
     }
     player.teleport(settings.spawnPoint().toLocation(world));
+    prepare(player);
+  }
+
+  @Override
+  public void prepare(Player player) {
+    if (settings == null) {
+      return;
+    }
     player.setGameMode(GameMode.ADVENTURE);
     fillFood(player);
+    giveHotbarItems(player);
     applyLobbyScoreboard(player);
+  }
+
+  private void giveHotbarItems(Player player) {
+    for (Map.Entry<Integer, ItemStack> entry : settings.hotbarItems().entrySet()) {
+      int slot = entry.getKey();
+      if (slot >= 0 && slot <= 8) {
+        player.getInventory().setItem(slot, entry.getValue().clone());
+      }
+    }
+  }
+
+  private boolean isLobbyItem(ItemStack stack) {
+    if (settings == null || stack == null || stack.getType().isAir()) {
+      return false;
+    }
+    return settings.hotbarItems().values().stream().anyMatch(item -> item.isSimilar(stack));
   }
 
   @EventHandler
   public void onJoin(PlayerJoinEvent event) {
-    Bukkit.getScheduler().runTask(plugin, () -> teleportToSpawn(event.getPlayer()));
+    Bukkit.getScheduler().runTask(plugin, () -> {
+      Player player = event.getPlayer();
+      if (player.isOnline() && !playing.test(player)) {
+        teleportToSpawn(player);
+      }
+    });
+  }
+
+  @EventHandler(ignoreCancelled = true)
+  public void onDrop(org.bukkit.event.player.PlayerDropItemEvent event) {
+    if (isLobbyPlayer(event.getPlayer()) && isLobbyItem(event.getItemDrop().getItemStack())) {
+      event.setCancelled(true);
+    }
+  }
+
+  @EventHandler(ignoreCancelled = true)
+  public void onInventoryClick(org.bukkit.event.inventory.InventoryClickEvent event) {
+    if (event.getWhoClicked() instanceof Player player && isLobbyPlayer(player)
+        && player.getGameMode() != GameMode.CREATIVE
+        && (isLobbyItem(event.getCurrentItem()) || isLobbyItem(event.getCursor())
+            || event.getClick() == org.bukkit.event.inventory.ClickType.NUMBER_KEY)) {
+      event.setCancelled(true);
+    }
+  }
+
+  @EventHandler(ignoreCancelled = true)
+  public void onSwapHands(org.bukkit.event.player.PlayerSwapHandItemsEvent event) {
+    if (isLobbyPlayer(event.getPlayer()) && (isLobbyItem(event.getMainHandItem())
+        || isLobbyItem(event.getOffHandItem()))) {
+      event.setCancelled(true);
+    }
   }
 
   @EventHandler
@@ -187,7 +247,8 @@ public final class DefaultLobbyService implements LobbyService, Listener {
             .map(line -> color(render(player, line))).toList());
       }
       TabPlayer tabPlayer = TabAPI.getInstance().getPlayer(player.getName());
-      if (tabPlayer != null && tabPlayer.isLoaded()) {
+      if (tabPlayer != null && tabPlayer.isLoaded()
+          && manager.getActiveScoreboard(tabPlayer) != scoreboard) {
         manager.showScoreboard(tabPlayer, scoreboard);
       }
     } catch (RuntimeException exception) {
@@ -261,7 +322,8 @@ public final class DefaultLobbyService implements LobbyService, Listener {
   private String render(Player player, String text) {
     StoredPlayerStats playerStats = statsCache.getOrDefault(player.getUniqueId(),
         new StoredPlayerStats(player.getUniqueId(), player.getName(), 0, 0, 0));
-    return text.replace("{player}", player.getName())
+    String withGame = settings.placeholders().apply(player, text);
+    return withGame.replace("{player}", player.getName())
         .replace("{world}", player.getWorld().getName())
         .replace("{online}", Integer.toString(Bukkit.getOnlinePlayers().size()))
         .replace("{kills}", Integer.toString(playerStats.kills()))
