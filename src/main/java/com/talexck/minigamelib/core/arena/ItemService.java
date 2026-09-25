@@ -3,7 +3,6 @@ package com.talexck.minigamelib.core.arena;
 import com.talexck.minigamelib.api.arena.ArenaItemEntry;
 import com.talexck.minigamelib.api.arena.ArenaItemMode;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
-import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -128,7 +127,9 @@ final class ItemService implements Listener {
     }
     ItemMeta meta = stack.getItemMeta();
     if (meta != null) {
-      meta.displayName(Component.text(name));
+      meta.displayName(LegacyText.component(name)
+          .decorationIfAbsent(net.kyori.adventure.text.format.TextDecoration.ITALIC,
+              net.kyori.adventure.text.format.TextDecoration.State.FALSE));
       stack.setItemMeta(meta);
     }
   }
@@ -156,7 +157,7 @@ final class ItemService implements Listener {
         }
         for (String playerName : current.playerNames()) {
           Player player = Bukkit.getPlayerExact(playerName);
-          if (player == null) {
+          if (player == null || current.isFailed(playerName)) {
             continue;
           }
           current.settings().beginningItems().stream()
@@ -279,7 +280,7 @@ final class ItemService implements Listener {
     }
     if (entry.mode() == ArenaItemMode.POTION || entry.mode() == ArenaItemMode.SELF_POTION
         || entry.mode() == ArenaItemMode.TEAM_LEATHER_ARMOR) {
-      return itemDisplayName(stack).equals(entry.name());
+      return itemDisplayName(stack).equals(entry.plainName());
     }
     return true;
   }

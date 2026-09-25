@@ -1,5 +1,6 @@
 package com.talexck.minigamelib.core.arena;
 
+import com.talexck.minigamelib.api.arena.ArenaStatus;
 import com.talexck.minigamelib.api.arena.ArenaCreateRequest;
 import com.talexck.minigamelib.api.arena.ArenaHandle;
 import com.talexck.minigamelib.api.arena.ArenaService;
@@ -19,9 +20,10 @@ public final class DefaultArenaService implements ArenaService {
 
   private final ArenaController controller;
 
-  public DefaultArenaService(JavaPlugin plugin, DefaultWorldService worldService,
+  public DefaultArenaService(JavaPlugin plugin, com.talexck.minigamelib.core.lang.LanguageService language,
+      DefaultWorldService worldService,
       StatsService statsService) {
-    this.controller = new ArenaController(plugin, worldService, statsService);
+    this.controller = new ArenaController(plugin, worldService, statsService, language);
   }
 
   @Override
@@ -101,5 +103,24 @@ public final class DefaultArenaService implements ArenaService {
 
   public void shutdown() {
     controller.shutdown();
+  }
+
+  @Override
+  public Optional<ArenaHandle> findArenaByPlayer(String playerName) {
+    return controller.arenas().stream()
+        .filter(handle -> handle.status() != ArenaStatus.DESTROYED
+            && handle.status() != ArenaStatus.STOPPED)
+        .filter(handle -> handle.playerNames().contains(playerName))
+        .findFirst();
+  }
+
+  @Override
+  public boolean isPlaying(org.bukkit.entity.Player player) {
+    return controller.isPlaying(player);
+  }
+
+  /** Hook run for each player sent back to the return point after a game. */
+  public void setReturnHandler(java.util.function.Consumer<org.bukkit.entity.Player> handler) {
+    controller.setReturnHandler(handler);
   }
 }

@@ -35,4 +35,10 @@ public interface ArenaService {
   Optional<ArenaHandle> findArena(String arenaId);
 
   List<ArenaHandle> arenas();
+
+  /** The arena (not yet destroyed) the player belongs to, if any. */
+  Optional<ArenaHandle> findArenaByPlayer(String playerName);
+
+  /** Whether the player takes part in an arena that is counting down or running. */
+  boolean isPlaying(org.bukkit.entity.Player player);
 }

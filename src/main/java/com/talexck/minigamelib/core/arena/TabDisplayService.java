@@ -1,6 +1,5 @@
 package com.talexck.minigamelib.core.arena;
 
-import com.talexck.minigamelib.api.arena.ArenaPlayerStats;
 import com.talexck.minigamelib.api.arena.ArenaScoreboardConfig;
 import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
@@ -19,7 +18,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.Supplier;
+import com.talexck.minigamelib.core.lang.LanguageService;
 
 /**
  * Encapsulates all TAB-plugin integration: the tablist layout (team panel, rankings, personal
@@ -35,22 +34,31 @@ final class TabDisplayService {
 
   private final JavaPlugin plugin;
   private final ArenaRegistry registry;
-  private final Supplier<String> gameNameSupplier;
+  private final LanguageService language;
   private final java.util.Set<String> warnedTabFeatures =
       java.util.concurrent.ConcurrentHashMap.newKeySet();
-  private final BukkitTask lobbyRefreshTask;
+  private BukkitTask pendingLobbyRefresh;
 
-  TabDisplayService(JavaPlugin plugin, ArenaRegistry registry) {
+  TabDisplayService(JavaPlugin plugin, ArenaRegistry registry, LanguageService language) {
     this.plugin = plugin;
     this.registry = registry;
-    this.gameNameSupplier = TabDisplayService::resolveGameName;
-    this.lobbyRefreshTask = Bukkit.getScheduler().runTaskTimer(plugin,
-        this::resetLobbyTabViews, 40L, 40L);
+    this.language = language;
+  }
+
+  /** Coalesces lobby tablist refreshes (join/quit bursts) into one refresh next tick. */
+  void scheduleLobbyRefresh() {
+    if (pendingLobbyRefresh != null && !pendingLobbyRefresh.isCancelled()) {
+      return;
+    }
+    pendingLobbyRefresh = Bukkit.getScheduler().runTaskLater(plugin, () -> {
+      pendingLobbyRefresh = null;
+      resetLobbyTabViews();
+    }, 2L);
   }
 
   // ---- Scoreboard ----------------------------------------------------------
 
-  boolean applyScoreboard(RuntimeArena arena, int secondsLeft, ArenaTextRenderer renderer) {
+  boolean applyScoreboard(RuntimeArena arena, int secondsLeft, DisplayService renderer) {
     ArenaScoreboardConfig config = arena.settings().scoreboard();
     if (!config.enabled()) {
       return false;
@@ -62,24 +70,27 @@ final class TabDisplayService {
         warnTabFeatureOnce("scoreboard");
         return false;
       }
-      String name = "mgl-scoreboard-" + arena.arenaId();
-      me.neznamy.tab.api.scoreboard.Scoreboard scoreboard =
-          manager.getRegisteredScoreboards().get(name);
-      List<String> lines = config.lines().stream()
-          .map(line -> LegacyText.legacySection(renderer.render(arena, line, secondsLeft, null)))
-          .toList();
-      String title =
-          LegacyText.legacySection(renderer.render(arena, config.title(), secondsLeft, null));
-      if (scoreboard == null) {
-        scoreboard = manager.createScoreboard(name, title, lines);
-        arena.setTabScoreboardName(name);
-      } else {
-        scoreboard.setTitle(title);
-        scoreboard.setLines(lines);
-      }
       for (String playerName : arena.playerNames()) {
         TabPlayer tabPlayer = tabPlayer(playerName);
-        if (tabPlayer != null) {
+        if (tabPlayer == null) {
+          continue;
+        }
+        String name = scoreboardName(arena, playerName);
+        List<String> lines = config.lines().stream()
+            .map(line -> LegacyText.legacySection(
+                renderer.render(arena, line, secondsLeft, null, playerName)))
+            .toList();
+        String title = LegacyText.legacySection(
+            renderer.render(arena, config.title(), secondsLeft, null, playerName));
+        me.neznamy.tab.api.scoreboard.Scoreboard scoreboard =
+            manager.getRegisteredScoreboards().get(name);
+        if (scoreboard == null) {
+          scoreboard = manager.createScoreboard(name, title, lines);
+        } else {
+          scoreboard.setTitle(title);
+          scoreboard.setLines(lines);
+        }
+        if (manager.getActiveScoreboard(tabPlayer) != scoreboard) {
           manager.showScoreboard(tabPlayer, scoreboard);
         }
       }
@@ -88,6 +99,10 @@ final class TabDisplayService {
       plugin.getLogger().fine("TAB scoreboard unavailable: " + exception.getMessage());
       return false;
     }
+  }
+
+  private String scoreboardName(RuntimeArena arena, String playerName) {
+    return "mgl-sb-" + arena.arenaId() + "-" + playerName.toLowerCase(Locale.ROOT);
   }
 
   void clearScoreboard(RuntimeArena arena) {
@@ -102,12 +117,11 @@ final class TabDisplayService {
         if (tabPlayer != null && manager.hasCustomScoreboard(tabPlayer)) {
           manager.resetScoreboard(tabPlayer);
         }
+        String name = scoreboardName(arena, playerName);
+        if (manager.getRegisteredScoreboards().containsKey(name)) {
+          manager.removeScoreboard(name);
+        }
       }
-      String name = arena.tabScoreboardName();
-      if (name != null && manager.getRegisteredScoreboards().containsKey(name)) {
-        manager.removeScoreboard(name);
-      }
-      arena.setTabScoreboardName(null);
     } catch (RuntimeException exception) {
       plugin.getLogger().fine("TAB scoreboard cleanup skipped: " + exception.getMessage());
     }
@@ -172,127 +186,152 @@ final class TabDisplayService {
 
   // ---- Tablist layout ------------------------------------------------------
 
-  void applyLayout(RuntimeArena arena) {
+  /**
+   * Sends every arena player a 4x20 layout: columns 1-2 hold the team roster, column 3 the game
+   * info and live ranking, column 4 the viewer's personal stats. All captions come from the
+   * MinigameLib language file and support arena placeholders.
+   */
+  void applyLayout(RuntimeArena arena, DisplayService display) {
     try {
       TabAPI api = TabAPI.getInstance();
       LayoutManager layoutManager = api.getLayoutManager();
       if (layoutManager == null) {
         warnTabFeatureOnce("layout");
-        applyHeaderFooter(arena);
+        applyHeaderFooter(arena, display);
         return;
       }
       long revision = arena.nextTabLayoutRevision();
+      List<String> roster = rosterLines(arena);
+      List<String> ranking = rankingLines(arena);
       for (String playerName : arena.playerNames()) {
         TabPlayer tabPlayer = tabPlayer(playerName);
-        if (tabPlayer != null) {
-          String layoutName = "mgl-layout-" + arena.arenaId() + "-" + revision + "-"
-              + playerName.toLowerCase(Locale.ROOT);
-          Layout layout = layoutManager.createNewLayout(layoutName, TAB_LAYOUT_SIZE);
-          fillBackground(layout);
-          fillTeamColumns(layout, arena);
-          fillRankingColumn(layout, arena);
-          fillPersonalColumn(layout, arena, playerName);
-          layoutManager.sendLayout(tabPlayer, layout);
+        if (tabPlayer == null) {
+          continue;
         }
+        String layoutName = "mgl-layout-" + arena.arenaId() + "-" + revision + "-"
+            + playerName.toLowerCase(Locale.ROOT);
+        Layout layout = layoutManager.createNewLayout(layoutName, TAB_LAYOUT_SIZE);
+        fillColumn(layout, 1, 40, roster);
+        List<String> info = new ArrayList<>();
+        for (String line : language.list("tab.info-lines")) {
+          info.add(display.render(arena, line, 0, null, playerName));
+        }
+        info.add("");
+        info.addAll(ranking);
+        fillColumn(layout, 41, 60, info);
+        List<String> personal = new ArrayList<>();
+        for (String line : language.list("tab.personal-lines")) {
+          personal.add(display.render(arena, line, 0, null, playerName));
+        }
+        fillColumn(layout, 61, 80, personal);
+        layoutManager.sendLayout(tabPlayer, layout);
       }
-      applyHeaderFooter(arena);
+      applyHeaderFooter(arena, display);
     } catch (RuntimeException exception) {
       plugin.getLogger().fine("TAB layout unavailable: " + exception.getMessage());
     }
   }
 
-  private void fillBackground(Layout layout) {
-    for (int slot = 1; slot <= TAB_LAYOUT_SIZE; slot++) {
-      addSlot(layout, slot, "&8" + " ".repeat(TAB_COLUMN_WIDTH));
+  private void fillColumn(Layout layout, int firstSlot, int lastSlot, List<String> lines) {
+    int slot = firstSlot;
+    for (String line : lines) {
+      if (slot > lastSlot) {
+        return;
+      }
+      addSlot(layout, slot++, line);
+    }
+    while (slot <= lastSlot) {
+      addSlot(layout, slot++, "");
     }
   }
 
-  private void fillTeamColumns(Layout layout, RuntimeArena arena) {
-    List<ArenaTeamColor> colors = tabTeamColors(arena);
-    for (int index = 0; index < colors.size(); index++) {
-      int column = index / 4;
-      if (column > 1) {
-        break;
+  /** Team blocks packed into two 20-row columns; a block never straddles the column break. */
+  private List<String> rosterLines(RuntimeArena arena) {
+    boolean solo = arena.teams().stream().allMatch(team -> team.playerNames().size() <= 1);
+    List<String> lines = new ArrayList<>();
+    if (solo) {
+      lines.add(language.text("tab.players-title", "{alive}", arena.alivePlayerCount(),
+          "{total}", arena.playerNames().size()));
+      arena.teams().stream()
+          .sorted(Comparator.comparing((ArenaTeam team) -> team.playerNames().stream()
+              .allMatch(arena::isFailed)).thenComparing(team -> team.color().ordinal()))
+          .forEach(team -> team.playerNames().forEach(name ->
+              lines.add(playerLine(arena, team.color(), name, true))));
+      return lines;
+    }
+    for (ArenaTeamColor color : tabTeamColors(arena)) {
+      ArenaTeam team = teamByColor(arena, color).orElse(null);
+      if (team == null || team.playerNames().isEmpty()) {
+        continue;
       }
-      int row = index % 4;
-      int baseSlot = column * 20 + row * 5 + 1;
-      ArenaTeamColor color = colors.get(index);
-      ArenaTeam team = teamByColor(arena, color).orElse(new ArenaTeam(color, List.of()));
-      long alive = team.playerNames().stream().filter(name -> !arena.isFailed(name)).count();
-      boolean teamDown = team.playerNames().size() > 0 && alive == 0;
-      String header = (teamDown ? "&m" : TeamPalette.legacyCode(color))
-          + "▎ " + TeamPalette.legacyCode(color) + "&l" + TeamPalette.displayName(color)
-          + " &8[" + (teamDown ? "&c" : "&a") + alive + "&8/&7" + team.playerNames().size() + "&8]";
-      addSlot(layout, baseSlot, header);
-      for (int offset = 0; offset < 4; offset++) {
-        String playerName =
-            offset < team.playerNames().size() ? team.playerNames().get(offset) : "";
-        if (playerName.isBlank()) {
-          addSlot(layout, baseSlot + offset + 1, "&8 ");
-        } else {
-          boolean dead = arena.isFailed(playerName);
-          String marker = dead ? "&8✘ &7&m" : "&7● " + TeamPalette.legacyCode(color);
-          addSlot(layout, baseSlot + offset + 1, marker + playerName);
+      int blockSize = team.playerNames().size() + 1;
+      int row = lines.size() % 20;
+      if (lines.size() < 20 && row + blockSize > 20) {
+        while (lines.size() < 20) {
+          lines.add("");
         }
       }
+      long alive = arena.alivePlayers(color);
+      boolean teamDown = alive == 0;
+      lines.add((teamDown ? "&8&m" : TeamPalette.legacyCode(color) + "&l")
+          + TeamPalette.displayName(color) + "&r " + (teamDown ? "&8" : "&7") + alive + "/"
+          + team.playerNames().size() + " &e" + arena.teamScore(team, 0L) + "✦");
+      for (String name : team.playerNames()) {
+        lines.add(playerLine(arena, color, name, false));
+      }
     }
+    return lines;
   }
 
-  private void fillRankingColumn(Layout layout, RuntimeArena arena) {
-    addSlot(layout, 41, "&6&l⚔ 队伍排名");
+  private String playerLine(RuntimeArena arena, ArenaTeamColor color, String name,
+      boolean withScore) {
+    boolean dead = arena.isFailed(name);
+    String prefix = dead ? "&8✘ &7&m" : "&a● " + TeamPalette.legacyCode(color);
+    String suffix = withScore ? " &r&e" + arena.score(name) + "✦" : "";
+    if (!dead && arena.kills(name) > 0) {
+      suffix = " &r&c⚔" + arena.kills(name) + suffix;
+    }
+    return prefix + name + suffix;
+  }
+
+  private List<String> rankingLines(RuntimeArena arena) {
+    List<String> lines = new ArrayList<>();
+    lines.add(language.text("tab.ranking-title"));
     long now = System.currentTimeMillis();
-    List<ArenaTeam> rankedTeams = arena.teams().stream()
-        .sorted(Comparator.comparingInt((ArenaTeam team) -> arena.teamScore(team, now))
-            .reversed().thenComparing(team -> team.color().ordinal()))
+    List<ArenaTeam> ranked = arena.teams().stream()
+        .filter(team -> !team.playerNames().isEmpty())
+        .sorted(Comparator.comparingInt((ArenaTeam team) -> arena.teamScore(team, now)).reversed()
+            .thenComparing(team -> team.color().ordinal()))
         .toList();
-    int slot = 42;
+    boolean solo = arena.teams().stream().allMatch(team -> team.playerNames().size() <= 1);
     int rank = 1;
-    for (ArenaTeam team : rankedTeams) {
-      if (slot > 60) {
+    for (ArenaTeam team : ranked) {
+      if (rank > 8) {
         break;
       }
-      ArenaTeamColor color = team.color();
       String medal = switch (rank) {
-        case 1 -> "&e①";
-        case 2 -> "&7②";
-        case 3 -> "&6③";
-        default -> "&8" + rank;
+        case 1 -> "&6#1";
+        case 2 -> "&f#2";
+        case 3 -> "&c#3";
+        default -> "&7#" + rank;
       };
-      addSlot(layout, slot++, medal + " " + TeamPalette.legacyCode(color) + "&l"
-          + TeamPalette.displayName(color) + " &8» &e" + arena.teamScore(team, now) + "&7分");
-      if (slot <= 60) {
-        addSlot(layout, slot++,
-            "  &7⚔ &c" + arena.teamKills(team) + " &8· &7⌛ &a" + arena.teamSurvivalSeconds(team, now)
-                + "&7s");
-      }
+      String name = solo ? team.playerNames().getFirst() : TeamPalette.displayName(team.color());
+      lines.add(medal + " " + TeamPalette.legacyCode(team.color()) + name + " &e"
+          + arena.teamScore(team, now) + "✦");
       rank++;
     }
-  }
-
-  private void fillPersonalColumn(Layout layout, RuntimeArena arena, String playerName) {
-    ArenaPlayerStats stats = arena.playerStats().stream()
-        .filter(s -> s.playerName().equalsIgnoreCase(playerName)).findFirst().orElse(null);
-    ArenaTeamColor color = stats == null ? null : stats.teamColor();
-    String colorCode = color == null ? "&f" : TeamPalette.legacyCode(color);
-    String teamName = color == null ? "无队伍" : TeamPalette.displayName(color);
-    boolean failed = stats != null && stats.failed();
-    addSlot(layout, 61, "&b&l✦ 个人统计");
-    addSlot(layout, 62, "&7玩家 " + colorCode + playerName);
-    addSlot(layout, 63, "&7队伍 " + colorCode + teamName);
-    addSlot(layout, 64, "&7击杀 &c" + (stats == null ? 0 : stats.kills()));
-    addSlot(layout, 65, "&7死亡 &f" + (stats == null ? 0 : stats.deaths()));
-    addSlot(layout, 66, "&7状态 " + (failed ? "&c☠ 淘汰" : "&a❤ 存活"));
+    return lines;
   }
 
   private void addSlot(Layout layout, int slot, String text) {
-    layout.addFixedSlot(slot, widen(text), 1);
+    layout.addFixedSlot(slot, LegacyText.legacySection(widen(text)), 1);
   }
 
   private String widen(String text) {
     String safeText = text == null ? "" : text;
     int visibleLength = TextRender.visibleLength(safeText);
-    int padding = Math.max(2, TAB_COLUMN_WIDTH - visibleLength);
-    return safeText + "&0" + " ".repeat(padding);
+    int padding = Math.max(1, TAB_COLUMN_WIDTH - visibleLength);
+    return safeText + "&r" + " ".repeat(padding);
   }
 
   // ---- Lobby reset ---------------------------------------------------------
@@ -362,21 +401,20 @@ final class TabDisplayService {
     layoutManager.sendLayout(tabPlayer, layout);
   }
 
-  private void applyHeaderFooter(RuntimeArena arena) {
+  private void applyHeaderFooter(RuntimeArena arena, DisplayService display) {
     try {
       HeaderFooterManager manager = TabAPI.getInstance().getHeaderFooterManager();
       if (manager == null) {
         warnTabFeatureOnce("header-footer");
         return;
       }
-      String name = gameNameSupplier.get();
-      long alive = arena.aliveTeamCount();
-      String header = "§r\n§b§l" + name + " §8» §f" + arena.playerNames().size()
-          + " §7玩家 §8· §a" + alive + " §7存活队伍\n§8▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬";
-      String footer = "§8▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n§7由 §a§lMinigameLib §7驱动§r";
       for (String playerName : arena.playerNames()) {
         TabPlayer tabPlayer = tabPlayer(playerName);
         if (tabPlayer != null) {
+          String header = LegacyText.legacySection(display.render(arena,
+              String.join("\n", language.list("tab.header")), 0, null, playerName));
+          String footer = LegacyText.legacySection(display.render(arena,
+              String.join("\n", language.list("tab.footer")), 0, null, playerName));
           manager.setHeaderAndFooter(tabPlayer, header, footer);
         }
       }
@@ -420,17 +458,9 @@ final class TabDisplayService {
     return Math.max(0.0, Math.min(1.0, progress));
   }
 
-  private static String resolveGameName() {
-    org.bukkit.plugin.Plugin skyBattle = Bukkit.getPluginManager().getPlugin("SkyBattle");
-    return skyBattle == null ? "SkyBattle" : skyBattle.getPluginMeta().getName();
-  }
-
-  /** The display name of the consuming game plugin, used in headers and end-of-game messages. */
-  String gameName() {
-    return gameNameSupplier.get();
-  }
-
   void shutdown() {
-    lobbyRefreshTask.cancel();
+    if (pendingLobbyRefresh != null) {
+      pendingLobbyRefresh.cancel();
+    }
   }
 }

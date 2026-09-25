@@ -45,7 +45,8 @@ public final class ResourcePackService {
       return;
     }
     ServedPack pack = preparePack(config);
-    player.setResourcePack(pack.url(), pack.sha1(), Component.text(config.prompt()),
+    player.setResourcePack(pack.url(), pack.sha1(), net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer.legacyAmpersand()
+            .deserialize(config.prompt()),
         config.required());
   }
 
@@ -101,7 +102,8 @@ public final class ResourcePackService {
     if (server != null) {
       return;
     }
-    server = HttpServer.create(new InetSocketAddress(0), 0);
+    int port = Math.max(0, plugin.getConfig().getInt("resource-pack-server.port", 0));
+    server = HttpServer.create(new InetSocketAddress(port), 0);
     server.createContext("/resourcepacks", this::handleResourcePack);
     server.setExecutor(Executors.newSingleThreadExecutor(command -> {
       Thread thread = new Thread(command, "minigamelib-resourcepack-http");
@@ -143,6 +145,10 @@ public final class ResourcePackService {
   }
 
   private String host() {
+    String configured = plugin.getConfig().getString("resource-pack-server.public-host", "");
+    if (configured != null && !configured.isBlank()) {
+      return configured;
+    }
     String ip = Bukkit.getIp();
     return ip == null || ip.isBlank() ? "127.0.0.1" : ip;
   }

@@ -7,5 +7,12 @@ public record ArenaTeamStats(
     List<String> playerNames,
     int kills,
     int deaths,
-    boolean failed) {
+    boolean failed,
+    int score,
+    int placement) {
+
+  public ArenaTeamStats(ArenaTeamColor color, List<String> playerNames, int kills, int deaths,
+      boolean failed) {
+    this(color, playerNames, kills, deaths, failed, 0, 0);
+  }
 }

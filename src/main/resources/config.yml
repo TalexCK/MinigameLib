@@ -1,0 +1,11 @@
+# MinigameLib configuration
+# Language of MinigameLib's own texts (team names, tab panel titles, queue messages...).
+# Bundled: zh_cn, en_us
+language: zh_cn
+
+# Built-in HTTP server used when a game asks MinigameLib to deliver its resource pack.
+resource-pack-server:
+  # 0 picks a random free port. Open this port in your firewall when players are remote.
+  port: 0
+  # Host name / IP players use to reach this server. Blank uses server-ip or 127.0.0.1.
+  public-host: ""

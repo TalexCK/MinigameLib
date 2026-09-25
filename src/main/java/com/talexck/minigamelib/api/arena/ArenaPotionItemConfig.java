@@ -12,7 +12,16 @@ public record ArenaPotionItemConfig(
     int amplifier,
     Duration effectDuration,
     int projectileCustomModelData,
-    String itemModelKey) {
+    String itemModelKey,
+    boolean clearNegativeEffects,
+    boolean affectEachPlayerOnce,
+    Duration fuse) {
+
+  public ArenaPotionItemConfig(double radius, Duration duration, PotionEffectType effectType,
+      int amplifier, Duration effectDuration, int projectileCustomModelData, String itemModelKey) {
+    this(radius, duration, effectType, amplifier, effectDuration, projectileCustomModelData,
+        itemModelKey, false, false, Duration.ZERO);
+  }
 
   public ArenaPotionItemConfig(double radius, Duration duration, PotionEffectType effectType,
       int amplifier, Duration effectDuration) {
@@ -26,13 +35,16 @@ public record ArenaPotionItemConfig(
 
   public ArenaPotionItemConfig {
     Objects.requireNonNull(duration, "duration");
-    Objects.requireNonNull(effectType, "effectType");
+    if (effectType == null && !clearNegativeEffects) {
+      throw new NullPointerException("effectType");
+    }
     Objects.requireNonNull(effectDuration, "effectDuration");
     itemModelKey = itemModelKey == null ? "" : itemModelKey;
+    fuse = fuse == null ? Duration.ZERO : fuse;
     if (radius <= 0) {
       throw new IllegalArgumentException("radius must be positive");
     }
-    if (duration.isNegative() || effectDuration.isNegative()) {
+    if (duration.isNegative() || effectDuration.isNegative() || fuse.isNegative()) {
       throw new IllegalArgumentException("potion durations cannot be negative");
     }
     if (amplifier < 0) {

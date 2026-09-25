@@ -1,16 +1,19 @@
 package com.talexck.minigamelib.core.arena;
 
+import com.talexck.minigamelib.api.arena.ArenaBoundaryShape;
 import com.talexck.minigamelib.api.arena.ArenaBoundaryStage;
 import com.talexck.minigamelib.api.arena.ArenaBoundaryWall;
 import com.talexck.minigamelib.api.arena.ArenaPoint;
 import com.talexck.minigamelib.api.arena.ArenaStatus;
 import com.talexck.minigamelib.api.arena.ArenaVerticalBoundary;
 import com.talexck.minigamelib.core.chest.DefaultChestService;
+import com.talexck.minigamelib.core.lang.LanguageService;
 import org.bukkit.Bukkit;
 import org.bukkit.Color;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Player;
@@ -39,11 +42,19 @@ final class BoundaryService implements Listener {
   private final ArenaRegistry registry;
   private final DefaultChestService chestService;
   private final CombatService combatService;
+  private final LanguageService language;
+  private static final double VIEW_DISTANCE = 20.0;
+  private static final double STEP = 1.5;
+  private static final Particle.DustOptions CURRENT_DUST =
+      new Particle.DustOptions(Color.fromRGB(255, 60, 60), 1.4f);
+  private static final Particle.DustOptions TARGET_DUST =
+      new Particle.DustOptions(Color.fromRGB(255, 170, 0), 1.1f);
   private final ConcurrentMap<String, RuntimeBoundary> boundaries = new ConcurrentHashMap<>();
 
   BoundaryService(JavaPlugin plugin, ArenaRegistry registry, DefaultChestService chestService,
-      CombatService combatService) {
+      CombatService combatService, LanguageService language) {
     this.plugin = plugin;
+    this.language = language;
     this.registry = registry;
     this.chestService = chestService;
     this.combatService = combatService;
@@ -77,7 +88,7 @@ final class BoundaryService implements Listener {
     arena.boundaryTasks().clear();
   }
 
-  /** Starts the per-tick particle render + out-of-bounds damage loop for a running arena. */
+  /** Starts the particle render + out-of-bounds damage loop for a running arena. */
   void startLifecycle(RuntimeArena arena) {
     BukkitTask task = new BukkitRunnable() {
       private int ticks;
@@ -105,10 +116,16 @@ final class BoundaryService implements Listener {
 
   /** Schedules each configured shrink stage relative to game start. */
   void scheduleStages(RuntimeArena arena) {
+    RuntimeBoundary boundary = boundaries.get(arena.arenaId());
+    long now = System.currentTimeMillis();
     long delayTicks = 0L;
     for (ArenaBoundaryStage stage : arena.settings().boundaryStages()) {
       delayTicks += toTicks(stage.delayAfterPreviousStage());
       long durationTicks = toTicks(stage.duration());
+      if (boundary != null) {
+        boundary.windows().add(new long[] {now + delayTicks * 50L,
+            now + (delayTicks + durationTicks) * 50L});
+      }
       BukkitTask task = Bukkit.getScheduler().runTaskLater(plugin,
           () -> startBoundaryShrink(arena, stage, durationTicks), delayTicks);
       arena.boundaryTasks().add(task);
@@ -116,12 +133,36 @@ final class BoundaryService implements Listener {
     }
   }
 
+  /** Human readable boundary state for the {@code {border}} placeholder. */
+  String statusText(RuntimeArena arena) {
+    RuntimeBoundary boundary = boundaries.get(arena.arenaId());
+    if (boundary == null || boundary.windows().isEmpty()) {
+      return language.text("border.static");
+    }
+    if (arena.status() != ArenaStatus.RUNNING) {
+      return language.text("border.waiting");
+    }
+    long now = System.currentTimeMillis();
+    for (long[] window : boundary.windows()) {
+      if (now < window[0]) {
+        return language.text("border.next", "{time}",
+            DisplayService.formatTime((window[0] - now + 999L) / 1000L));
+      }
+      if (now < window[1]) {
+        return language.text("border.shrinking", "{time}",
+            DisplayService.formatTime((window[1] - now + 999L) / 1000L));
+      }
+    }
+    return language.text("border.final");
+  }
+
   private void startBoundaryShrink(RuntimeArena arena, ArenaBoundaryStage stage,
       long durationTicks) {
     RuntimeBoundary boundary = boundaries.get(arena.arenaId());
-    if (boundary == null) {
+    if (boundary == null || arena.status() != ArenaStatus.RUNNING) {
       return;
     }
+    announceShrink(arena);
     double startX = boundary.currentXDistance();
     double startZ = boundary.currentZDistance();
     double startLowerY = boundary.currentLowerY();
@@ -164,72 +205,132 @@ final class BoundaryService implements Listener {
     arena.boundaryTasks().add(task);
   }
 
+  private void announceShrink(RuntimeArena arena) {
+    String message = arena.settings().presentation().borderShrinkMessage();
+    for (String playerName : arena.playerNames()) {
+      Player player = Bukkit.getPlayerExact(playerName);
+      if (player == null) {
+        continue;
+      }
+      if (!message.isBlank()) {
+        player.sendMessage(LegacyText.component(message));
+      }
+      player.playSound(player.getLocation(), Sound.BLOCK_BEACON_DEACTIVATE, 0.8f, 0.6f);
+    }
+  }
+
   private void spawnBoundaryParticles(RuntimeArena arena, RuntimeBoundary boundary) {
     World world = arena.world().world();
-    Particle.DustOptions red = new Particle.DustOptions(Color.RED, 1.25f);
-    Particle.DustOptions orange = new Particle.DustOptions(Color.fromRGB(255, 140, 0), 1.25f);
-    spawnVerticalBoundaryParticles(world, boundary, red, orange);
+    ArenaBoundaryShape shape = arena.settings().rules().boundaryShape();
     for (String playerName : arena.playerNames()) {
       Player player = Bukkit.getPlayerExact(playerName);
       if (player == null || !player.getWorld().equals(world)) {
         continue;
       }
-      double y = player.getLocation().getY() + 0.15;
-      spawnBoundaryRectangle(world, boundary.centerX(), boundary.centerZ(),
-          boundary.currentXDistance(), boundary.currentZDistance(), y, red);
+      Location eye = player.getLocation();
+      // Only the part of the boundary near each viewer is drawn, and only for that viewer.
+      spawnWallNear(player, shape, boundary, boundary.currentXDistance(),
+          boundary.currentZDistance(), eye, CURRENT_DUST, 3);
       if (boundary.hasTarget()) {
-        spawnBoundaryRectangle(world, boundary.centerX(), boundary.centerZ(),
-            boundary.targetXDistance(), boundary.targetZDistance(), y + 0.35, orange);
+        spawnWallNear(player, shape, boundary, boundary.targetXDistance(),
+            boundary.targetZDistance(), eye, TARGET_DUST, 1);
+      }
+      spawnHorizontalPlaneNear(player, shape, boundary, boundary.currentLowerY(), eye);
+      spawnHorizontalPlaneNear(player, shape, boundary, boundary.currentUpperY(), eye);
+    }
+  }
+
+  private void spawnWallNear(Player viewer, ArenaBoundaryShape shape, RuntimeBoundary boundary,
+      double xDistance, double zDistance, Location eye, Particle.DustOptions dust, int rows) {
+    double dx = eye.getX() - boundary.centerX();
+    double dz = eye.getZ() - boundary.centerZ();
+    double gap = BoundaryMath.distanceOutside(shape, dx, dz, xDistance, zDistance);
+    boolean inside = !BoundaryMath.outsideHorizontal(shape, dx, dz, xDistance, zDistance);
+    if (inside) {
+      // Distance from the wall when inside.
+      gap = shape == ArenaBoundaryShape.CIRCLE
+          ? Math.max(0.0, Math.min(xDistance, zDistance) - Math.sqrt(dx * dx + dz * dz))
+          : Math.min(xDistance - Math.abs(dx), zDistance - Math.abs(dz));
+    }
+    if (gap > VIEW_DISTANCE) {
+      return;
+    }
+    for (double[] point : wallPoints(shape, boundary, xDistance, zDistance, eye)) {
+      for (int row = 0; row < rows; row++) {
+        double y = eye.getY() - 0.5 + row * 1.2;
+        viewer.spawnParticle(Particle.DUST, point[0], y, point[1], 1, 0.0, 0.0, 0.0, 0.0, dust);
       }
     }
   }
 
-  private void spawnVerticalBoundaryParticles(World world, RuntimeBoundary boundary,
-      Particle.DustOptions current, Particle.DustOptions target) {
-    spawnBoundaryYRectangle(world, boundary, boundary.currentLowerY(), boundary.currentXDistance(),
-        boundary.currentZDistance(), current);
-    spawnBoundaryYRectangle(world, boundary, boundary.currentUpperY(), boundary.currentXDistance(),
-        boundary.currentZDistance(), current);
-    if (!boundary.hasTarget()) {
+  private List<double[]> wallPoints(ArenaBoundaryShape shape, RuntimeBoundary boundary,
+      double xDistance, double zDistance, Location eye) {
+    List<double[]> points = new java.util.ArrayList<>();
+    double cx = boundary.centerX();
+    double cz = boundary.centerZ();
+    double maxDistanceSquared = VIEW_DISTANCE * VIEW_DISTANCE;
+    if (shape == ArenaBoundaryShape.CIRCLE) {
+      double radius = Math.max(xDistance, zDistance);
+      int samples = (int) Math.min(720, Math.max(24, Math.ceil(2 * Math.PI * radius / STEP)));
+      for (int index = 0; index < samples; index++) {
+        double angle = 2 * Math.PI * index / samples;
+        double x = cx + Math.cos(angle) * xDistance;
+        double z = cz + Math.sin(angle) * zDistance;
+        if (square(x - eye.getX()) + square(z - eye.getZ()) <= maxDistanceSquared) {
+          points.add(new double[] {x, z});
+        }
+      }
+      return points;
+    }
+    double minX = cx - xDistance;
+    double maxX = cx + xDistance;
+    double minZ = cz - zDistance;
+    double maxZ = cz + zDistance;
+    for (double x = minX; x <= maxX; x += STEP) {
+      addIfNear(points, x, minZ, eye, maxDistanceSquared);
+      addIfNear(points, x, maxZ, eye, maxDistanceSquared);
+    }
+    for (double z = minZ; z <= maxZ; z += STEP) {
+      addIfNear(points, minX, z, eye, maxDistanceSquared);
+      addIfNear(points, maxX, z, eye, maxDistanceSquared);
+    }
+    return points;
+  }
+
+  private void addIfNear(List<double[]> points, double x, double z, Location eye,
+      double maxDistanceSquared) {
+    if (square(x - eye.getX()) + square(z - eye.getZ()) <= maxDistanceSquared) {
+      points.add(new double[] {x, z});
+    }
+  }
+
+  /** Draws a small patch of the floor/ceiling boundary around a viewer close to it. */
+  private void spawnHorizontalPlaneNear(Player viewer, ArenaBoundaryShape shape,
+      RuntimeBoundary boundary, double y, Location eye) {
+    if (y == ArenaVerticalBoundary.DISABLED || Math.abs(eye.getY() - y) > 10.0) {
       return;
     }
-    spawnBoundaryYRectangle(world, boundary, boundary.targetLowerY(), boundary.targetXDistance(),
-        boundary.targetZDistance(), target);
-    spawnBoundaryYRectangle(world, boundary, boundary.targetUpperY(), boundary.targetXDistance(),
-        boundary.targetZDistance(), target);
-  }
-
-  private void spawnBoundaryYRectangle(World world, RuntimeBoundary boundary, double y,
-      double xDistance, double zDistance, Particle.DustOptions dust) {
-    if (y == ArenaVerticalBoundary.DISABLED) {
-      return;
-    }
-    spawnBoundaryRectangle(world, boundary.centerX(), boundary.centerZ(), xDistance, zDistance, y,
-        dust);
-  }
-
-  private void spawnBoundaryRectangle(World world, double centerX, double centerZ, double xDistance,
-      double zDistance, double y, Particle.DustOptions dust) {
-    double step = 3.0;
-    double minX = centerX - xDistance;
-    double maxX = centerX + xDistance;
-    double minZ = centerZ - zDistance;
-    double maxZ = centerZ + zDistance;
-    for (double x = minX; x <= maxX; x += step) {
-      spawnDust(world, x, y, minZ, dust);
-      spawnDust(world, x, y, maxZ, dust);
-    }
-    for (double z = minZ; z <= maxZ; z += step) {
-      spawnDust(world, minX, y, z, dust);
-      spawnDust(world, maxX, y, z, dust);
+    for (double x = -8; x <= 8; x += STEP) {
+      for (double z = -8; z <= 8; z += STEP) {
+        double px = Math.floor(eye.getX()) + x;
+        double pz = Math.floor(eye.getZ()) + z;
+        if (BoundaryMath.outsideHorizontal(shape, px - boundary.centerX(),
+            pz - boundary.centerZ(), boundary.currentXDistance(), boundary.currentZDistance())) {
+          continue;
+        }
+        viewer.spawnParticle(Particle.DUST, px, y, pz, 1, 0.0, 0.0, 0.0, 0.0, CURRENT_DUST);
+      }
     }
   }
 
-  private void spawnDust(World world, double x, double y, double z, Particle.DustOptions dust) {
-    world.spawnParticle(Particle.DUST, new Location(world, x, y, z), 1, dust);
+  private static double square(double value) {
+    return value * value;
   }
 
   private void damagePlayersOutsideBoundary(RuntimeArena arena, RuntimeBoundary boundary) {
+    ArenaBoundaryShape shape = arena.settings().rules().boundaryShape();
+    double damage = arena.settings().rules().boundaryDamagePerSecond();
+    String warning = arena.settings().presentation().outOfBoundsActionBar();
     for (String playerName : arena.playerNames()) {
       Player player = Bukkit.getPlayerExact(playerName);
       if (player == null || arena.isFailed(playerName)
@@ -237,29 +338,44 @@ final class BoundaryService implements Listener {
         continue;
       }
       Location location = player.getLocation();
-      if (Math.abs(location.getX() - boundary.centerX()) > boundary.currentXDistance()
-          || Math.abs(location.getZ() - boundary.centerZ()) > boundary.currentZDistance()
-          || boundary.outsideY(location.getY())) {
-        player.damage(2.0);
+      boolean outside = BoundaryMath.outsideHorizontal(shape,
+          location.getX() - boundary.centerX(), location.getZ() - boundary.centerZ(),
+          boundary.currentXDistance(), boundary.currentZDistance())
+          || boundary.outsideY(location.getY());
+      if (!outside) {
+        continue;
+      }
+      if (!warning.isBlank()) {
+        player.sendActionBar(LegacyText.component(warning));
+      }
+      player.playSound(location, Sound.BLOCK_NOTE_BLOCK_BASS, 0.6f, 0.5f);
+      if (damage > 0) {
+        player.damage(damage);
       }
     }
   }
 
+  /**
+   * Falling below the world (or below the configured lower boundary) eliminates immediately. The
+   * upper boundary only hurts over time, like the sides.
+   */
   @EventHandler
   public void onPlayerMove(PlayerMoveEvent event) {
-    if (event.getFrom().getY() == event.getTo().getY()) {
+    if (event.getFrom().getBlockY() == event.getTo().getBlockY()) {
       return;
     }
     Player player = event.getPlayer();
     RuntimeArena arena = registry.findRunningByPlayer(player.getName()).orElse(null);
-    if (arena == null) {
+    if (arena == null || arena.isFailed(player.getName())) {
       return;
     }
     double y = event.getTo().getY();
     RuntimeBoundary runtimeBoundary = boundaries.get(arena.arenaId());
-    boolean outsideConfigured = runtimeBoundary != null && runtimeBoundary.outsideY(y);
+    boolean belowConfigured = runtimeBoundary != null
+        && runtimeBoundary.currentLowerY() != ArenaVerticalBoundary.DISABLED
+        && y < runtimeBoundary.currentLowerY() - 8.0;
     boolean belowWorld = y < player.getWorld().getMinHeight();
-    if (!outsideConfigured && !belowWorld) {
+    if (!belowConfigured && !belowWorld) {
       return;
     }
     combatService.eliminatePlayer(player);
@@ -308,6 +424,7 @@ final class BoundaryService implements Listener {
     private double targetZDistance = -1.0;
     private double targetLowerY = ArenaVerticalBoundary.DISABLED;
     private double targetUpperY = ArenaVerticalBoundary.DISABLED;
+    private final List<long[]> windows = new java.util.ArrayList<>();
 
     private RuntimeBoundary(double centerX, double centerZ, double currentXDistance,
         double currentZDistance, double currentLowerY, double currentUpperY) {
@@ -317,6 +434,10 @@ final class BoundaryService implements Listener {
       this.currentZDistance = Math.max(1.0, currentZDistance);
       this.currentLowerY = currentLowerY;
       this.currentUpperY = currentUpperY;
+    }
+
+    private List<long[]> windows() {
+      return windows;
     }
 
     private double centerX() {

@@ -1,5 +1,7 @@
 package com.talexck.minigamelib.core.arena;
 
+import com.talexck.minigamelib.api.arena.ArenaPresentation;
+import com.talexck.minigamelib.api.arena.ArenaStatus;
 import com.talexck.minigamelib.api.arena.ArenaStopReason;
 import com.talexck.minigamelib.api.arena.ArenaTeam;
 import com.talexck.minigamelib.api.arena.ArenaTeamColor;
@@ -9,6 +11,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Sound;
 import org.bukkit.World;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeInstance;
@@ -25,10 +28,13 @@ import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityPlaceEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.time.Duration;
 import java.util.Comparator;
+import java.util.Map;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,16 +50,18 @@ final class CombatService implements Listener {
   private static final long DAMAGE_CREDIT_TTL_MILLIS = 10_000L;
   static final long POTION_CREDIT_TTL_MILLIS = 12_000L;
 
+  private final JavaPlugin plugin;
   private final ArenaRegistry registry;
-  private final ArenaDisplay display;
+  private final DisplayService display;
   private final ArenaLifecycleControl lifecycle;
   private final ConcurrentMap<UUID, DeathCredit> deathCredits = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, String> creeperOwners = new ConcurrentHashMap<>();
   private final ConcurrentMap<UUID, RecentCreeperPlacement> recentCreeperPlacements =
       new ConcurrentHashMap<>();
 
-  CombatService(JavaPlugin plugin, ArenaRegistry registry, ArenaDisplay display,
+  CombatService(JavaPlugin plugin, ArenaRegistry registry, DisplayService display,
       ArenaLifecycleControl lifecycle) {
+    this.plugin = plugin;
     this.registry = registry;
     this.display = display;
     this.lifecycle = lifecycle;
@@ -65,21 +73,27 @@ final class CombatService implements Listener {
     if (!(event.getEntity() instanceof Player player)) {
       return;
     }
-    RuntimeArena arena = registry.findRunningByPlayer(player.getName()).orElse(null);
-    if (arena == null || arena.isFailed(player.getName())) {
+    RuntimeArena arena = registry.findByPlayer(player.getName()).orElse(null);
+    if (arena == null) {
       return;
     }
-    if (event.getFinalDamage() < player.getHealth()) {
+    if (arena.status() != ArenaStatus.RUNNING || arena.isFailed(player.getName())) {
+      // Nobody can be hurt while caged in the countdown, and spectators are out of the game.
+      event.setCancelled(true);
+      return;
+    }
+    if (event.getFinalDamage() < player.getHealth()
+        && event.getCause() != EntityDamageEvent.DamageCause.VOID) {
       return;
     }
     if (event instanceof EntityDamageByEntityEvent entityDamage) {
       recordDamageCredit(arena, player, entityDamage.getDamager());
     }
     event.setCancelled(true);
-    eliminatePlayer(arena, player);
+    eliminatePlayer(arena, player, false);
   }
 
-  @EventHandler
+  @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
   public void onEntityDamageByEntity(EntityDamageByEntityEvent event) {
     if (!(event.getEntity() instanceof Player victim)) {
       return;
@@ -88,8 +102,8 @@ final class CombatService implements Listener {
     if (arena == null) {
       return;
     }
-    if (event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.ENTITY_EXPLOSION
-        || event.getCause() == org.bukkit.event.entity.EntityDamageEvent.DamageCause.BLOCK_EXPLOSION
+    if (event.getCause() == EntityDamageEvent.DamageCause.ENTITY_EXPLOSION
+        || event.getCause() == EntityDamageEvent.DamageCause.BLOCK_EXPLOSION
         || event.getDamager() instanceof TNTPrimed || event.getDamager() instanceof Creeper) {
       recordDamageCredit(arena, victim, event.getDamager());
       return;
@@ -98,14 +112,45 @@ final class CombatService implements Listener {
     if (attacker == null || attacker.equals(victim)) {
       return;
     }
+    if (arena.isFailed(attacker.getName())) {
+      event.setCancelled(true);
+      return;
+    }
     Optional<ArenaTeamColor> attackerTeam = arena.teamOf(attacker.getName());
     Optional<ArenaTeamColor> victimTeam = arena.teamOf(victim.getName());
     if (attackerTeam.isPresent() && attackerTeam.equals(victimTeam)) {
       event.setCancelled(true);
-      deathCredits.remove(victim.getUniqueId());
       return;
     }
     recordDamageCredit(arena, victim, event.getDamager());
+  }
+
+  /**
+   * A player leaving mid-game is eliminated (credited to their last attacker, like a combat log).
+   * During the countdown they simply forfeit their slot.
+   */
+  @EventHandler(priority = EventPriority.LOWEST)
+  public void onPlayerQuit(PlayerQuitEvent event) {
+    Player player = event.getPlayer();
+    RuntimeArena arena = registry.findByPlayer(player.getName()).orElse(null);
+    if (arena == null || arena.isFailed(player.getName())) {
+      return;
+    }
+    if (arena.status() == ArenaStatus.RUNNING) {
+      eliminatePlayer(arena, player, true);
+    } else {
+      ArenaTeamColor teamColor = arena.teamOf(player.getName()).orElse(null);
+      boolean teamWasFailed = teamColor != null && arena.isTeamFailed(teamColor);
+      arena.markFailedWithoutDeath(player.getName());
+      arena.listener().onPlayerFailed(arena.handle(), player.getName(), teamColor);
+      if (teamColor != null && !teamWasFailed && arena.isTeamFailed(teamColor)) {
+        arena.listener().onTeamFailed(arena.handle(), teamColor, teamPlayers(arena, teamColor));
+      }
+      display.refreshScoreboards(arena, 0);
+    }
+    player.getInventory().clear();
+    player.getInventory().setArmorContents(null);
+    player.getInventory().setItemInOffHand(null);
   }
 
   private boolean isCreditableKill(RuntimeArena arena, String victimName, String killerName) {
@@ -151,7 +196,8 @@ final class CombatService implements Listener {
     }
     if (damager instanceof Creeper creeper) {
       String killerName = creeperOwners.get(creeper.getUniqueId());
-      deathCredits.put(victim.getUniqueId(), new DeathCredit(killerName, DeathSource.CREEPER, "苦力怕",
+      deathCredits.put(victim.getUniqueId(), new DeathCredit(killerName, DeathSource.CREEPER,
+          display.text("combat.source-creeper"),
           System.currentTimeMillis() + DAMAGE_CREDIT_TTL_MILLIS));
       return;
     }
@@ -165,7 +211,7 @@ final class CombatService implements Listener {
   /** Records a potion-sphere kill credit (called by the projectile/potion subsystem). */
   void creditPotionDeath(UUID victimId, String shooterName, String itemName) {
     deathCredits.put(victimId, new DeathCredit(shooterName, DeathSource.POTION,
-        itemName == null || itemName.isBlank() ? "药水球" : itemName,
+        itemName == null || itemName.isBlank() ? display.text("combat.source-potion") : itemName,
         System.currentTimeMillis() + POTION_CREDIT_TTL_MILLIS));
   }
 
@@ -174,21 +220,59 @@ final class CombatService implements Listener {
     if (arena == null || arena.isFailed(player.getName())) {
       return;
     }
-    eliminatePlayer(arena, player);
+    eliminatePlayer(arena, player, false);
   }
 
-  private void eliminatePlayer(RuntimeArena arena, Player player) {
+  private void eliminatePlayer(RuntimeArena arena, Player player, boolean disconnected) {
     DeathCredit credit = validDeathCredit(player).orElse(null);
     String messageKillerName = credit == null ? null : credit.killerName();
     String creditedKillerName = creditableKillerName(arena, player.getName(), messageKillerName);
+    int killScore = arena.settings().rules().killScore();
     if (creditedKillerName != null) {
       arena.recordKill(creditedKillerName);
+      arena.addScore(creditedKillerName, killScore);
       arena.listener().onKillPlayer(arena.handle(), creditedKillerName, player.getName());
     }
+    Location deathLocation = player.getLocation();
     dropInventoryExceptBlocks(player);
-    fakeRespawn(player);
+    if (!disconnected) {
+      fakeRespawn(arena, player, deathLocation);
+    }
     broadcastDeathMessage(arena, player.getName(), messageKillerName, credit);
     failPlayer(arena, player, creditedKillerName);
+    sendEliminationFeedback(arena, player, disconnected, messageKillerName, creditedKillerName,
+        killScore);
+    checkVictory(arena);
+  }
+
+  private void sendEliminationFeedback(RuntimeArena arena, Player victim, boolean disconnected,
+      String killerName, String creditedKillerName, int killScore) {
+    ArenaPresentation presentation = arena.settings().presentation();
+    Map<String, String> extra = Map.of("{victim}", victim.getName(),
+        "{killer}", killerName == null ? display.text("combat.unknown-killer") : killerName,
+        "{gained}", Integer.toString(killScore));
+    if (!disconnected) {
+      display.showTitle(victim, arena, presentation.eliminatedTitle(),
+          presentation.eliminatedSubtitle(), extra, Duration.ofMillis(100),
+          Duration.ofMillis(2200), Duration.ofMillis(500));
+      victim.playSound(victim.getLocation(), Sound.ENTITY_WITHER_SPAWN, 0.5f, 1.6f);
+    }
+    if (creditedKillerName != null) {
+      Player killer = Bukkit.getPlayerExact(creditedKillerName);
+      if (killer != null) {
+        display.showActionBar(killer, arena, presentation.killActionBar(), extra);
+        killer.playSound(killer.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1.0f, 1.2f);
+        killer.playSound(killer.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.6f, 2.0f);
+      }
+    }
+    for (String playerName : arena.playerNames()) {
+      Player viewer = Bukkit.getPlayerExact(playerName);
+      if (viewer != null && !viewer.equals(victim)
+          && !playerName.equals(creditedKillerName)) {
+        viewer.playSound(viewer.getLocation(), Sound.ENTITY_PLAYER_HURT_SWEET_BERRY_BUSH, 0.4f,
+            0.7f);
+      }
+    }
   }
 
   private String creditableKillerName(RuntimeArena arena, String victimName, String killerName) {
@@ -220,13 +304,25 @@ final class CombatService implements Listener {
     world.dropItemNaturally(location, stack.clone());
   }
 
-  private void fakeRespawn(Player player) {
+  private void fakeRespawn(RuntimeArena arena, Player player, Location deathLocation) {
     player.setFireTicks(0);
     player.setFallDistance(0.0f);
     player.setHealth(Math.max(1.0, maxHealth(player)));
     player.setFoodLevel(20);
     player.setSaturation(20.0f);
+    for (org.bukkit.potion.PotionEffect effect : List.copyOf(player.getActivePotionEffects())) {
+      player.removePotionEffect(effect.getType());
+    }
     player.setGameMode(GameMode.SPECTATOR);
+    World world = arena.world().world();
+    if (!world.equals(deathLocation.getWorld())
+        || deathLocation.getY() < world.getMinHeight() + 2) {
+      // Fell into the void: park the spectator above the arena center instead of under the map.
+      Location spectate = arena.layout().center().toLocation(world).add(0.5, 12.0, 0.5);
+      spectate.setYaw(deathLocation.getYaw());
+      spectate.setPitch(35.0f);
+      player.teleport(spectate);
+    }
   }
 
   private double maxHealth(Player player) {
@@ -277,12 +373,13 @@ final class CombatService implements Listener {
       } else if (template.startsWith("{killer}", index)) {
         String renderedKiller =
             killerName == null && credit != null ? credit.killerName() : killerName;
-        result = result.append(renderedKiller == null ? Component.text("未知来源")
+        result = result.append(renderedKiller == null
+            ? LegacyText.component(display.text("combat.unknown-killer"))
             : coloredPlayerName(arena, renderedKiller));
         index += "{killer}".length();
       } else if (template.startsWith("{source}", index)) {
-        result = result
-            .append(Component.text(credit == null ? "" : credit.sourceName(), NamedTextColor.GOLD));
+        result = result.append(LegacyText.component(credit == null ? "" : credit.sourceName())
+            .colorIfAbsent(NamedTextColor.GOLD));
         index += "{source}".length();
       } else {
         int next = nextDeathPlaceholderIndex(template, index);
@@ -319,20 +416,58 @@ final class CombatService implements Listener {
       arena.listener().onPlayerKilled(arena.handle(), player.getName(), killerName);
     }
     if (!wasFailed && arena.isFailed(player.getName())) {
+      awardOutliveScore(arena, player.getName(), teamColor);
       arena.listener().onPlayerFailed(arena.handle(), player.getName(), teamColor);
     }
     if (teamColor != null && !teamWasFailed && arena.isTeamFailed(teamColor)) {
-      List<String> failedTeamPlayers =
-          arena.teams().stream().filter(team -> team.color() == teamColor).findFirst()
-              .map(ArenaTeam::playerNames).orElse(List.of());
-      arena.listener().onTeamFailed(arena.handle(), teamColor, failedTeamPlayers);
+      arena.listener().onTeamFailed(arena.handle(), teamColor, teamPlayers(arena, teamColor));
+      broadcastTeamEliminated(arena, teamColor);
     }
     display.refreshScoreboards(arena, 0);
-    checkVictory(arena);
   }
 
-  private void checkVictory(RuntimeArena arena) {
-    if (arena.settings().victoryCondition() == null) {
+  /** Every surviving enemy of the eliminated player earns the configured outlive score. */
+  private void awardOutliveScore(RuntimeArena arena, String victimName,
+      ArenaTeamColor victimTeam) {
+    int outliveScore = arena.settings().rules().outliveScore();
+    if (outliveScore <= 0) {
+      return;
+    }
+    for (String playerName : arena.playerNames()) {
+      if (playerName.equals(victimName) || arena.isFailed(playerName)) {
+        continue;
+      }
+      if (victimTeam != null && arena.teamOf(playerName).map(victimTeam::equals).orElse(false)) {
+        continue;
+      }
+      arena.addScore(playerName, outliveScore);
+    }
+  }
+
+  private void broadcastTeamEliminated(RuntimeArena arena, ArenaTeamColor teamColor) {
+    String template = arena.settings().presentation().teamEliminatedMessage();
+    if (template.isBlank() || arena.teams().stream().allMatch(
+        team -> team.playerNames().size() <= 1)) {
+      // In solo modes the death message already says everything.
+      return;
+    }
+    String teamName = TeamPalette.legacyCode(teamColor) + TeamPalette.displayName(teamColor);
+    for (String playerName : arena.playerNames()) {
+      Player viewer = Bukkit.getPlayerExact(playerName);
+      if (viewer != null) {
+        viewer.sendMessage(LegacyText.component(display.render(arena, template, 0, null,
+            playerName).replace("{team}", teamName)));
+      }
+    }
+  }
+
+  private List<String> teamPlayers(RuntimeArena arena, ArenaTeamColor teamColor) {
+    return arena.teams().stream().filter(team -> team.color() == teamColor).findFirst()
+        .map(ArenaTeam::playerNames).orElse(List.of());
+  }
+
+  void checkVictory(RuntimeArena arena) {
+    if (arena.settings().victoryCondition() == null || arena.status() != ArenaStatus.RUNNING) {
       return;
     }
     if (arena.aliveTeamCount() == 0) {

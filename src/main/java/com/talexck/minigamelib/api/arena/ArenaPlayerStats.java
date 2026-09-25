@@ -5,5 +5,11 @@ public record ArenaPlayerStats(
     ArenaTeamColor teamColor,
     int kills,
     int deaths,
-    boolean failed) {
+    boolean failed,
+    int score) {
+
+  public ArenaPlayerStats(String playerName, ArenaTeamColor teamColor, int kills, int deaths,
+      boolean failed) {
+    this(playerName, teamColor, kills, deaths, failed, 0);
+  }
 }

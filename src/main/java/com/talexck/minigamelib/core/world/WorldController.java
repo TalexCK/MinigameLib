@@ -66,7 +66,8 @@ public final class WorldController {
       Instant loadStartedAt = Instant.now();
       return loadWorld(request.runtimeWorldName()).thenApply(
           world -> new RuntimeWorld(request.templateWorldName(), request.runtimeWorldName(), world,
-              copyResult.duration(), Duration.between(loadStartedAt, Instant.now())));
+              copyResult.duration(), Duration.between(loadStartedAt, Instant.now()),
+              world.getWorldFolder().toPath().toAbsolutePath().normalize()));
     });
   }
 
@@ -79,6 +80,30 @@ public final class WorldController {
   public CompletableFuture<Boolean> deleteWorldDirectory(String worldName) {
     return CompletableFuture.supplyAsync(() -> repository.deleteWorldDirectory(worldName),
         ioExecutor);
+  }
+
+  /** Deletes the copied folder and, if different, the folder the server migrated it to. */
+  public CompletableFuture<Boolean> deleteRuntimeWorld(RuntimeWorld runtimeWorld) {
+    return CompletableFuture.supplyAsync(() -> {
+      boolean deleted = repository.deleteWorldDirectory(runtimeWorld.runtimeWorldName());
+      if (runtimeWorld.worldPath() != null) {
+        deleted |= repository.deleteMigratedWorld(runtimeWorld.worldPath(),
+            runtimeWorld.runtimeWorldName());
+      }
+      return deleted;
+    }, ioExecutor);
+  }
+
+  /** Synchronous variant used during shutdown when the executor is going away. */
+  public void deleteRuntimeWorldNow(RuntimeWorld runtimeWorld) {
+    try {
+      repository.deleteWorldDirectory(runtimeWorld.runtimeWorldName());
+      if (runtimeWorld.worldPath() != null) {
+        repository.deleteMigratedWorld(runtimeWorld.worldPath(), runtimeWorld.runtimeWorldName());
+      }
+    } catch (RuntimeException exception) {
+      plugin.getLogger().warning("Runtime world delete failed: " + exception.getMessage());
+    }
   }
 
   public void shutdown() {
